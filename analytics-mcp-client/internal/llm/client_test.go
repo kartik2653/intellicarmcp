@@ -13,56 +13,68 @@ import (
 
 func TestCompleteParsesToolCalls(t *testing.T) {
 	t.Parallel()
-	var got chatRequest
+	var got messagesRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer test-key" {
-			t.Errorf("authorization = %s", r.Header.Get("Authorization"))
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") != "test-key" {
+			t.Errorf("api key header = %s", r.Header.Get("x-api-key"))
+		}
+		if r.Header.Get("anthropic-version") != apiVersion {
+			t.Errorf("version = %s", r.Header.Get("anthropic-version"))
 		}
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Error(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
-			"choices":[{"index":0,"finish_reason":"tool_calls","message":{
-				"role":"assistant",
-				"content":"I'll look that up.",
-				"reasoning_content":"need a query",
-				"tool_calls":[{"id":"call_1","type":"function","function":{"name":"run_query","arguments":"{\"query\":\"SELECT 1\"}"}}]
-			}}]
+			"stop_reason":"tool_use",
+			"content":[
+				{"type":"thinking","thinking":"need a query"},
+				{"type":"text","text":"I'll look that up."},
+				{"type":"tool_use","id":"call_1","name":"run_query","input":{"query":"SELECT 1"}}
+			]
 		}`))
 	}))
 	t.Cleanup(server.Close)
 
-	client := &Client{BaseURL: server.URL, APIKey: "test-key", Model: "grok-4.6", HTTPClient: server.Client()}
-	user, _ := json.Marshal(Message{Role: "user", Content: "How many fleets?"})
-	completion, err := client.Complete(context.Background(), []json.RawMessage{user}, []Tool{{
-		Type:     "function",
-		Function: FunctionDef{Name: "run_query", Parameters: json.RawMessage(`{"type":"object"}`)},
+	client := &Client{BaseURL: server.URL, APIKey: "test-key", Model: "claude-sonnet-5-5", Effort: "medium", HTTPClient: server.Client()}
+	user, _ := json.Marshal(struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}{Role: "user", Content: "How many fleets?"})
+	completion, err := client.Complete(context.Background(), "Use the tools.", []json.RawMessage{user}, []Tool{{
+		Name:        "run_query",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Model != "grok-4.6" || got.ToolChoice != "auto" || len(got.Tools) != 1 {
+	if got.Model != "claude-sonnet-5-5" || got.ToolChoice == nil || got.ToolChoice.Type != "auto" || got.OutputConfig.Effort != "medium" || len(got.Tools) != 1 {
 		t.Fatalf("request = %+v", got)
 	}
-	if completion.Message.ToolCalls[0].ID != "call_1" || !strings.Contains(string(completion.RawMessage), "reasoning_content") {
-		t.Fatalf("completion = %+v raw=%s", completion.Message, completion.RawMessage)
+	if strings.Contains(string(mustJSON(got)), "temperature") {
+		t.Fatal("request included a sampling parameter")
+	}
+	if completion.ToolCalls[0].ID != "call_1" || completion.Text != "I'll look that up." || !strings.Contains(string(completion.RawMessage), "need a query") {
+		t.Fatalf("completion = %+v raw=%s", completion, completion.RawMessage)
 	}
 }
 
 func TestCompleteNoToolCall(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Fleet 101 travelled 10 km."}}]}`))
+		_, _ = w.Write([]byte(`{"stop_reason":"end_turn","content":[{"type":"text","text":"Fleet 101 travelled 10 km."}]}`))
 	}))
 	t.Cleanup(server.Close)
-	client := &Client{BaseURL: server.URL, APIKey: "k", Model: "grok-4.6", HTTPClient: server.Client()}
-	completion, err := client.Complete(context.Background(), []json.RawMessage{json.RawMessage(`{"role":"user","content":"hi"}`)}, nil)
+	client := &Client{BaseURL: server.URL, APIKey: "k", Model: "claude-sonnet-5-5", HTTPClient: server.Client()}
+	completion, err := client.Complete(context.Background(), "", []json.RawMessage{json.RawMessage(`{"role":"user","content":"hi"}`)}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if completion.Message.Content != "Fleet 101 travelled 10 km." || len(completion.Message.ToolCalls) != 0 {
-		t.Fatalf("message = %+v", completion.Message)
+	if completion.Text != "Fleet 101 travelled 10 km." || len(completion.ToolCalls) != 0 {
+		t.Fatalf("message = %+v", completion)
 	}
 }
 
@@ -75,7 +87,7 @@ func TestCompleteAPIErrors(t *testing.T) {
 	}{
 		{http.StatusUnauthorized, `{"error":{"message":"bad key test-key"}}`, nil},
 		{http.StatusTooManyRequests, `{"error":{"message":"slow down"}}`, ErrRateLimited},
-		{http.StatusNotFound, `{"error":{"message":"model grok-missing does not exist"}}`, ErrModelUnavailable},
+		{http.StatusNotFound, `{"error":{"message":"model claude-missing does not exist"}}`, ErrModelUnavailable},
 		{http.StatusBadRequest, `{"error":{"message":"maximum context length exceeded"}}`, ErrContextLimit},
 	}
 	for _, tc := range cases {
@@ -83,8 +95,8 @@ func TestCompleteAPIErrors(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_, _ = w.Write([]byte(tc.body))
 		}))
-		client := &Client{BaseURL: server.URL, APIKey: "test-key", Model: "grok-4.6", HTTPClient: server.Client()}
-		_, err := client.Complete(context.Background(), []json.RawMessage{json.RawMessage(`{"role":"user","content":"hi"}`)}, nil)
+		client := &Client{BaseURL: server.URL, APIKey: "test-key", Model: "claude-sonnet-5-5", HTTPClient: server.Client()}
+		_, err := client.Complete(context.Background(), "", []json.RawMessage{json.RawMessage(`{"role":"user","content":"hi"}`)}, nil)
 		server.Close()
 		if err == nil {
 			t.Fatalf("status %d: expected error", tc.status)
@@ -104,8 +116,8 @@ func TestCompleteMalformedAndTimeout(t *testing.T) {
 		_, _ = w.Write([]byte(`not-json`))
 	}))
 	t.Cleanup(server.Close)
-	client := &Client{BaseURL: server.URL, APIKey: "k", Model: "grok-4.6", HTTPClient: server.Client()}
-	_, err := client.Complete(context.Background(), []json.RawMessage{json.RawMessage(`{"role":"user","content":"hi"}`)}, nil)
+	client := &Client{BaseURL: server.URL, APIKey: "k", Model: "claude-sonnet-5-5", HTTPClient: server.Client()}
+	_, err := client.Complete(context.Background(), "", []json.RawMessage{json.RawMessage(`{"role":"user","content":"hi"}`)}, nil)
 	if err == nil || !strings.Contains(err.Error(), "not valid JSON") {
 		t.Fatalf("err = %v", err)
 	}
@@ -116,9 +128,14 @@ func TestCompleteMalformedAndTimeout(t *testing.T) {
 	t.Cleanup(slow.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	slowClient := &Client{BaseURL: slow.URL, APIKey: "k", Model: "grok-4.6", HTTPClient: slow.Client()}
-	_, err = slowClient.Complete(ctx, []json.RawMessage{json.RawMessage(`{"role":"user","content":"hi"}`)}, nil)
+	slowClient := &Client{BaseURL: slow.URL, APIKey: "k", Model: "claude-sonnet-5-5", HTTPClient: slow.Client()}
+	_, err = slowClient.Complete(ctx, "", []json.RawMessage{json.RawMessage(`{"role":"user","content":"hi"}`)}, nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("timeout err = %v", err)
 	}
+}
+
+func mustJSON(value any) []byte {
+	raw, _ := json.Marshal(value)
+	return raw
 }

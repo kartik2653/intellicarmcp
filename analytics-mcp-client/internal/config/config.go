@@ -9,8 +9,10 @@ import (
 )
 
 const (
-	defaultBaseURL    = "https://api.x.ai/v1"
-	defaultModel      = "grok-4.6"
+	defaultBaseURL    = "https://api.anthropic.com"
+	defaultModel      = "claude-sonnet-5-5"
+	defaultEffort     = "medium"
+	defaultMaxTokens  = 32000
 	defaultMCPURL     = "http://127.0.0.1:8080/mcp"
 	defaultMaxCalls   = 10
 	defaultTimeoutSec = 60
@@ -22,6 +24,8 @@ type Config struct {
 	APIKey         string
 	BaseURL        string
 	Model          string
+	Effort         string
+	MaxTokens      int
 	MCPServerURL   string
 	MaxToolCalls   int
 	RequestTimeout time.Duration
@@ -33,19 +37,32 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	if getenv == nil {
 		getenv = func(string) string { return "" }
 	}
-	apiKey := strings.TrimSpace(getenv("XAI_API_KEY"))
+	apiKey := strings.TrimSpace(getenv("ANTHROPIC_API_KEY"))
 	if apiKey == "" {
-		return Config{}, fmt.Errorf("XAI_API_KEY is required")
+		return Config{}, fmt.Errorf("ANTHROPIC_API_KEY is required")
 	}
-	baseURL := strings.TrimRight(stringOr(getenv("XAI_BASE_URL"), defaultBaseURL), "/")
+	baseURL := strings.TrimRight(stringOr(getenv("ANTHROPIC_BASE_URL"), defaultBaseURL), "/")
 	parsedBase, err := url.Parse(baseURL)
 	if err != nil || parsedBase.Host == "" || (parsedBase.Scheme != "http" && parsedBase.Scheme != "https") {
-		return Config{}, fmt.Errorf("XAI_BASE_URL must be an absolute http or https URL")
+		return Config{}, fmt.Errorf("ANTHROPIC_BASE_URL must be an absolute http or https URL")
 	}
 	if parsedBase.User != nil {
-		return Config{}, fmt.Errorf("XAI_BASE_URL must not embed credentials")
+		return Config{}, fmt.Errorf("ANTHROPIC_BASE_URL must not embed credentials")
 	}
-	model := stringOr(getenv("XAI_MODEL"), defaultModel)
+	model := stringOr(getenv("ANTHROPIC_MODEL"), defaultModel)
+	effort := strings.ToLower(stringOr(getenv("ANTHROPIC_EFFORT"), defaultEffort))
+	switch effort {
+	case "low", "medium", "high", "xhigh", "max":
+	default:
+		return Config{}, fmt.Errorf("ANTHROPIC_EFFORT must be low, medium, high, xhigh, or max")
+	}
+	maxTokens, err := intOr(getenv("ANTHROPIC_MAX_TOKENS"), defaultMaxTokens)
+	if err != nil {
+		return Config{}, fmt.Errorf("ANTHROPIC_MAX_TOKENS: %w", err)
+	}
+	if maxTokens <= 0 {
+		return Config{}, fmt.Errorf("ANTHROPIC_MAX_TOKENS must be positive")
+	}
 	mcpURL := stringOr(getenv("MCP_SERVER_URL"), defaultMCPURL)
 	parsedMCP, err := url.Parse(mcpURL)
 	if err != nil || parsedMCP.Host == "" || (parsedMCP.Scheme != "http" && parsedMCP.Scheme != "https") {
@@ -76,6 +93,8 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		APIKey:         apiKey,
 		BaseURL:        baseURL,
 		Model:          model,
+		Effort:         effort,
+		MaxTokens:      maxTokens,
 		MCPServerURL:   mcpURL,
 		MaxToolCalls:   maxCalls,
 		RequestTimeout: time.Duration(timeoutSec) * time.Second,

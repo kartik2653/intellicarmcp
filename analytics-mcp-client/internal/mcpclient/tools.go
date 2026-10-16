@@ -11,7 +11,7 @@ import (
 
 var objectParameters = json.RawMessage(`{"type":"object","additionalProperties":true}`)
 
-// Convert builds an xAI function definition from a discovered MCP tool.
+// Convert builds an Anthropic tool definition from a discovered MCP tool.
 // A schema whose root is not an object is replaced for the model with an
 // object schema. Local validation still uses the original schema when it resolves.
 func Convert(tool *mcp.Tool) (llm.Tool, json.RawMessage, error) {
@@ -27,12 +27,9 @@ func Convert(tool *mcp.Tool) (llm.Tool, json.RawMessage, error) {
 		parameters = objectParameters
 	}
 	return llm.Tool{
-		Type: "function",
-		Function: llm.FunctionDef{
-			Name:        tool.Name,
-			Description: tool.Description,
-			Parameters:  append(json.RawMessage(nil), parameters...),
-		},
+		Name:        tool.Name,
+		Description: tool.Description,
+		InputSchema: append(json.RawMessage(nil), parameters...),
 	}, raw, nil
 }
 

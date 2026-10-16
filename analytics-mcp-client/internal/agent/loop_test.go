@@ -21,11 +21,8 @@ type fakeTools struct {
 
 func (f *fakeTools) Definitions() []llm.Tool {
 	return []llm.Tool{{
-		Type: "function",
-		Function: llm.FunctionDef{
-			Name:       "run_query",
-			Parameters: json.RawMessage(`{"type":"object"}`),
-		},
+		Name:        "run_query",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}}
 }
 
@@ -43,7 +40,7 @@ func (f *fakeTools) Execute(_ context.Context, name string, arguments json.RawMe
 func TestLoopFinalAnswerWithoutTools(t *testing.T) {
 	t.Parallel()
 	loop := testLoop(t, []string{
-		`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"No data needed."}}]}`,
+		`{"stop_reason":"end_turn","content":[{"type":"text","text":"No data needed."}]}`,
 	}, &fakeTools{})
 	answer, err := loop.Ask(context.Background(), "hello")
 	if err != nil || answer != "No data needed." {
@@ -55,12 +52,12 @@ func TestLoopOneToolCallPreservesID(t *testing.T) {
 	t.Parallel()
 	var requests []json.RawMessage
 	server := scriptServer(t, []string{
-		`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":"I'll retrieve the totals.","reasoning_content":"query","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"run_query","arguments":"{\"query\":\"SELECT 1\"}"}}]}}]}`,
-		`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Fleet 101 travelled 10 km."}}]}`,
+		`{"stop_reason":"tool_use","content":[{"type":"thinking","thinking":"query"},{"type":"text","text":"I'll retrieve the totals."},{"type":"tool_use","id":"call_abc","name":"run_query","input":{"query":"SELECT 1"}}]}`,
+		`{"stop_reason":"end_turn","content":[{"type":"text","text":"Fleet 101 travelled 10 km."}]}`,
 	}, &requests)
 	tools := &fakeTools{}
 	loop := &Loop{
-		LLM:          &llm.Client{BaseURL: server.URL, APIKey: "k", Model: "grok-4.6", HTTPClient: server.Client()},
+		LLM:          &llm.Client{BaseURL: server.URL, APIKey: "k", Model: "claude-sonnet-5-5", Effort: "medium", HTTPClient: server.Client()},
 		Tools:        tools,
 		MaxToolCalls: 10,
 		Timeout:      time.Second,
@@ -75,15 +72,8 @@ func TestLoopOneToolCallPreservesID(t *testing.T) {
 		t.Fatalf("answer=%q calls=%v", answer, tools.calls)
 	}
 	raw := string(requests[1])
-	if !strings.Contains(raw, `"tool_call_id":"call_abc"`) || !strings.Contains(raw, `"reasoning_content":"query"`) {
-		t.Fatalf("history dropped tool id or reasoning: %s", raw)
-	}
-	var second llmRequest
-	if err := json.Unmarshal(requests[1], &second); err != nil {
-		t.Fatal(err)
-	}
-	if second.Messages[len(second.Messages)-1].Role != "tool" {
-		t.Fatalf("last message = %+v", second.Messages[len(second.Messages)-1])
+	if !strings.Contains(raw, `"tool_use_id":"call_abc"`) || !strings.Contains(raw, `"thinking":"query"`) {
+		t.Fatalf("history dropped tool id or thinking: %s", raw)
 	}
 }
 
@@ -91,11 +81,8 @@ func TestLoopMultipleToolCallsAndLimit(t *testing.T) {
 	t.Parallel()
 	tools := &fakeTools{}
 	loop := testLoop(t, []string{
-		`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[
-			{"id":"c1","type":"function","function":{"name":"run_query","arguments":"{\"query\":\"a\"}"}},
-			{"id":"c2","type":"function","function":{"name":"run_query","arguments":"{\"query\":\"b\"}"}}
-		]}}]}`,
-		`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"both done"}}]}`,
+		`{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"c1","name":"run_query","input":{"query":"a"}},{"type":"tool_use","id":"c2","name":"run_query","input":{"query":"b"}}]}`,
+		`{"stop_reason":"end_turn","content":[{"type":"text","text":"both done"}]}`,
 	}, tools)
 	answer, err := loop.Ask(context.Background(), "compare")
 	if err != nil || answer != "both done" || len(tools.calls) != 2 {
@@ -103,10 +90,7 @@ func TestLoopMultipleToolCallsAndLimit(t *testing.T) {
 	}
 
 	limited := testLoop(t, []string{
-		`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[
-			{"id":"c1","type":"function","function":{"name":"run_query","arguments":"{\"query\":\"a\"}"}},
-			{"id":"c2","type":"function","function":{"name":"run_query","arguments":"{\"query\":\"b\"}"}}
-		]}}]}`,
+		`{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"c1","name":"run_query","input":{"query":"a"}},{"type":"tool_use","id":"c2","name":"run_query","input":{"query":"b"}}]}`,
 	}, &fakeTools{})
 	limited.MaxToolCalls = 1
 	_, err = limited.Ask(context.Background(), "compare")
@@ -119,8 +103,8 @@ func TestLoopUnknownToolAndRepeatedCalls(t *testing.T) {
 	t.Parallel()
 	tools := &fakeTools{}
 	loop := testLoop(t, []string{
-		`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"shell","arguments":"{}"}}]}}]}`,
-		`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"I cannot run that."}}]}`,
+		`{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"c1","name":"shell","input":{}}]}`,
+		`{"stop_reason":"end_turn","content":[{"type":"text","text":"I cannot run that."}]}`,
 	}, tools)
 	answer, err := loop.Ask(context.Background(), "run a command")
 	if err != nil || answer != "I cannot run that." {
@@ -131,8 +115,8 @@ func TestLoopUnknownToolAndRepeatedCalls(t *testing.T) {
 	}
 
 	repeated := testLoop(t, []string{
-		`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"run_query","arguments":"{\"query\":\"same\"}"}}]}}]}`,
-		`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"c2","type":"function","function":{"name":"run_query","arguments":"{\"query\":\"same\"}"}}]}}]}`,
+		`{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"c1","name":"run_query","input":{"query":"same"}}]}`,
+		`{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"c2","name":"run_query","input":{"query":"same"}}]}`,
 	}, &fakeTools{})
 	_, err = repeated.Ask(context.Background(), "again")
 	if err == nil || !strings.Contains(err.Error(), "repeated") {
@@ -144,11 +128,11 @@ func TestLoopKeepsFailedToolResult(t *testing.T) {
 	t.Parallel()
 	var rawBodies []json.RawMessage
 	server := scriptServer(t, []string{
-		`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"err1","type":"function","function":{"name":"run_query","arguments":"{}"}}]}}]}`,
-		`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"The query failed."}}]}`,
+		`{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"err1","name":"run_query","input":{}}]}`,
+		`{"stop_reason":"end_turn","content":[{"type":"text","text":"The query failed."}]}`,
 	}, &rawBodies)
 	loop := &Loop{
-		LLM:          &llm.Client{BaseURL: server.URL, APIKey: "k", Model: "grok-4.6", HTTPClient: server.Client()},
+		LLM:          &llm.Client{BaseURL: server.URL, APIKey: "k", Model: "claude-sonnet-5-5", Effort: "medium", HTTPClient: server.Client()},
 		Tools:        &fakeTools{fail: true},
 		MaxToolCalls: 4,
 		Timeout:      time.Second,
@@ -157,13 +141,9 @@ func TestLoopKeepsFailedToolResult(t *testing.T) {
 	if err != nil || answer != "The query failed." {
 		t.Fatalf("answer=%q err=%v", answer, err)
 	}
-	if !strings.Contains(string(rawBodies[1]), "upstream failed") || !strings.Contains(string(rawBodies[1]), `"tool_call_id":"err1"`) {
+	if !strings.Contains(string(rawBodies[1]), "upstream failed") || !strings.Contains(string(rawBodies[1]), `"tool_use_id":"err1"`) {
 		t.Fatalf("failed result was discarded: %s", rawBodies[1])
 	}
-}
-
-type llmRequest struct {
-	Messages []llm.Message `json:"messages"`
 }
 
 func testLoop(t *testing.T, responses []string, tools Executor) *Loop {
@@ -171,7 +151,7 @@ func testLoop(t *testing.T, responses []string, tools Executor) *Loop {
 	var ignored []json.RawMessage
 	server := scriptServer(t, responses, &ignored)
 	return &Loop{
-		LLM:          &llm.Client{BaseURL: server.URL, APIKey: "k", Model: "grok-4.6", HTTPClient: server.Client()},
+		LLM:          &llm.Client{BaseURL: server.URL, APIKey: "k", Model: "claude-sonnet-5-5", Effort: "medium", HTTPClient: server.Client()},
 		Tools:        tools,
 		MaxToolCalls: 10,
 		Timeout:      time.Second,

@@ -14,8 +14,8 @@ import (
 	"github.com/Intellicars/intellicarmcp/analytics-mcp-client/internal/mcpclient"
 )
 
-// TestLive asks Grok one question through a running MCP gateway.
-// It is skipped unless XAI_API_KEY is configured and the gateway accepts TCP connections.
+// TestLive asks Claude one question through a running MCP gateway.
+// It is skipped unless ANTHROPIC_API_KEY is configured and the gateway accepts TCP connections.
 func TestLive(t *testing.T) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -44,6 +44,8 @@ func TestLive(t *testing.T) {
 			BaseURL:    cfg.BaseURL,
 			APIKey:     cfg.APIKey,
 			Model:      cfg.Model,
+			Effort:     cfg.Effort,
+			MaxTokens:  cfg.MaxTokens,
 			HTTPClient: llm.TimeoutClient(cfg.RequestTimeout),
 		},
 		Tools:        gateway,

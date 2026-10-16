@@ -41,6 +41,8 @@ func main() {
 		BaseURL:    cfg.BaseURL,
 		APIKey:     cfg.APIKey,
 		Model:      cfg.Model,
+		Effort:     cfg.Effort,
+		MaxTokens:  cfg.MaxTokens,
 		HTTPClient: llm.TimeoutClient(cfg.RequestTimeout),
 	}
 	app := &cli.App{

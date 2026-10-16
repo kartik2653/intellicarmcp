@@ -77,7 +77,7 @@ func (c *Client) Reload(ctx context.Context) error {
 	return nil
 }
 
-// Definitions returns xAI tool definitions in discovery order.
+// Definitions returns Anthropic tool definitions in discovery order.
 func (c *Client) Definitions() []llm.Tool {
 	out := make([]llm.Tool, 0, len(c.order))
 	for _, name := range c.order {

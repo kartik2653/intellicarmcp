@@ -22,7 +22,7 @@ func TestInteractiveTextInput(t *testing.T) {
 	app := &App{
 		In:        strings.NewReader("\nWhat is the total distance travelled by each fleet last month?\nexit\n"),
 		Out:       &out,
-		Model:     "grok-4.6",
+		Model:     "claude-sonnet-5-5",
 		ToolNames: []string{"list_databases", "list_tables", "run_query"},
 		Asker:     asker,
 	}
@@ -33,7 +33,7 @@ func TestInteractiveTextInput(t *testing.T) {
 		t.Fatalf("questions = %#v", asker.got)
 	}
 	text := out.String()
-	if !strings.Contains(text, "Model: grok-4.6") || !strings.Contains(text, "Tools discovered: 3") || !strings.Contains(text, "run_query") {
+	if !strings.Contains(text, "Model: claude-sonnet-5-5") || !strings.Contains(text, "Tools discovered: 3") || !strings.Contains(text, "run_query") {
 		t.Fatalf("banner = %s", text)
 	}
 	if !strings.Contains(text, "Assistant: Fleet 101 travelled 10 km.") {

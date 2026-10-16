@@ -11,17 +11,23 @@ import (
 	"time"
 )
 
-const toolChoiceAuto = "auto"
+const (
+	apiVersion     = "2023-06-01"
+	defaultEffort  = "medium"
+	defaultMaxToks = 32000
+)
 
-// Client calls the xAI Chat Completions API.
+// Client calls the Anthropic Messages API.
 type Client struct {
 	BaseURL    string
 	APIKey     string
 	Model      string
+	Effort     string
+	MaxTokens  int
 	HTTPClient *http.Client
 }
 
-// APIError is a non-2xx response from xAI.
+// APIError is a non-2xx response from Anthropic.
 type APIError struct {
 	Status  int
 	Message string
@@ -30,96 +36,152 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	if e.Message == "" {
-		return fmt.Sprintf("xAI API returned HTTP %d", e.Status)
+		return fmt.Sprintf("Anthropic API returned HTTP %d", e.Status)
 	}
-	return fmt.Sprintf("xAI API returned HTTP %d: %s", e.Status, e.Message)
+	return fmt.Sprintf("Anthropic API returned HTTP %d: %s", e.Status, e.Message)
 }
 
 // ErrModelUnavailable means the requested model was rejected.
-var ErrModelUnavailable = fmt.Errorf("xAI model is unavailable for this account")
+var ErrModelUnavailable = fmt.Errorf("Anthropic model is unavailable for this account")
 
 // ErrRateLimited means the API asked the client to slow down.
-var ErrRateLimited = fmt.Errorf("xAI API rate limit reached")
+var ErrRateLimited = fmt.Errorf("Anthropic API rate limit reached")
 
 // ErrContextLimit means the request or completion exceeded a token limit.
-var ErrContextLimit = fmt.Errorf("xAI request exceeded the context or token limit")
+var ErrContextLimit = fmt.Errorf("Anthropic request exceeded the context or token limit")
 
-type chatRequest struct {
-	Model      string            `json:"model"`
-	Messages   []json.RawMessage `json:"messages"`
-	Tools      []Tool            `json:"tools,omitempty"`
-	ToolChoice string            `json:"tool_choice,omitempty"`
+type messagesRequest struct {
+	Model        string            `json:"model"`
+	MaxTokens    int               `json:"max_tokens"`
+	System       string            `json:"system,omitempty"`
+	Messages     []json.RawMessage `json:"messages"`
+	Tools        []Tool            `json:"tools,omitempty"`
+	ToolChoice   *toolChoice       `json:"tool_choice,omitempty"`
+	OutputConfig outputConfig      `json:"output_config"`
 }
 
-// Complete posts one chat completion. The model name is sent unchanged.
-func (c *Client) Complete(ctx context.Context, messages []json.RawMessage, tools []Tool) (Completion, error) {
+type toolChoice struct {
+	Type string `json:"type"`
+}
+
+type outputConfig struct {
+	Effort string `json:"effort"`
+}
+
+// Complete posts one Messages request. The model name is sent unchanged.
+func (c *Client) Complete(ctx context.Context, system string, messages []json.RawMessage, tools []Tool) (Completion, error) {
 	if c.HTTPClient == nil {
 		c.HTTPClient = http.DefaultClient
 	}
-	payload := chatRequest{
-		Model:      c.Model,
-		Messages:   messages,
-		Tools:      tools,
-		ToolChoice: toolChoiceAuto,
+	effort := strings.TrimSpace(c.Effort)
+	if effort == "" {
+		effort = defaultEffort
 	}
-	if len(tools) == 0 {
-		payload.ToolChoice = ""
+	maxTokens := c.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultMaxToks
+	}
+	payload := messagesRequest{
+		Model:        c.Model,
+		MaxTokens:    maxTokens,
+		System:       system,
+		Messages:     messages,
+		Tools:        tools,
+		OutputConfig: outputConfig{Effort: effort},
+	}
+	if len(tools) > 0 {
+		payload.ToolChoice = &toolChoice{Type: "auto"}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return Completion{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return Completion{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("x-api-key", c.APIKey)
+	req.Header.Set("anthropic-version", apiVersion)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Completion{}, ctx.Err()
 		}
-		return Completion{}, fmt.Errorf("xAI request failed: %w", err)
+		return Completion{}, fmt.Errorf("Anthropic request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return Completion{}, fmt.Errorf("read xAI response: %w", err)
+		return Completion{}, fmt.Errorf("read Anthropic response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return Completion{}, c.httpError(resp.StatusCode, raw)
 	}
 	var decoded struct {
-		Choices []struct {
-			Message      json.RawMessage `json:"message"`
-			FinishReason string          `json:"finish_reason"`
-		} `json:"choices"`
+		StopReason string          `json:"stop_reason"`
+		Content    json.RawMessage `json:"content"`
 	}
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return Completion{}, fmt.Errorf("xAI response was not valid JSON")
+		return Completion{}, fmt.Errorf("Anthropic response was not valid JSON")
 	}
-	if len(decoded.Choices) == 0 || len(decoded.Choices[0].Message) == 0 {
-		return Completion{}, fmt.Errorf("xAI response did not include an assistant message")
+	if len(decoded.Content) == 0 || string(decoded.Content) == "null" {
+		return Completion{}, fmt.Errorf("Anthropic response did not include assistant content")
 	}
-	var message Message
-	if err := json.Unmarshal(decoded.Choices[0].Message, &message); err != nil {
-		return Completion{}, fmt.Errorf("xAI assistant message was not valid JSON")
+	text, calls, err := parseContent(decoded.Content)
+	if err != nil {
+		return Completion{}, err
 	}
-	if decoded.Choices[0].FinishReason == "length" {
-		return Completion{
-			RawMessage:   decoded.Choices[0].Message,
-			Message:      message,
-			FinishReason: decoded.Choices[0].FinishReason,
-		}, ErrContextLimit
+	assistant, err := json.Marshal(struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}{Role: "assistant", Content: decoded.Content})
+	if err != nil {
+		return Completion{}, err
 	}
-	return Completion{
-		RawMessage:   decoded.Choices[0].Message,
-		Message:      message,
-		FinishReason: decoded.Choices[0].FinishReason,
-	}, nil
+	completion := Completion{
+		RawMessage:   assistant,
+		Text:         text,
+		ToolCalls:    calls,
+		FinishReason: decoded.StopReason,
+	}
+	if decoded.StopReason == "max_tokens" {
+		return completion, ErrContextLimit
+	}
+	return completion, nil
+}
+
+func parseContent(raw json.RawMessage) (string, []ToolCall, error) {
+	var blocks []struct {
+		Type  string          `json:"type"`
+		Text  string          `json:"text"`
+		ID    string          `json:"id"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return "", nil, fmt.Errorf("Anthropic assistant content was not valid JSON")
+	}
+	var text strings.Builder
+	var calls []ToolCall
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			if text.Len() > 0 && block.Text != "" {
+				text.WriteByte('\n')
+			}
+			text.WriteString(block.Text)
+		case "tool_use":
+			input := block.Input
+			if len(input) == 0 || string(input) == "null" {
+				input = json.RawMessage(`{}`)
+			}
+			calls = append(calls, ToolCall{ID: block.ID, Name: block.Name, Input: append(json.RawMessage(nil), input...)})
+		}
+	}
+	return text.String(), calls, nil
 }
 
 func (c *Client) httpError(status int, body []byte) error {
@@ -134,8 +196,7 @@ func (c *Client) httpError(status int, body []byte) error {
 		message = decoded.Error.Message
 	}
 	message = redact(message, c.APIKey)
-	kind := "api"
-	err := &APIError{Status: status, Message: message, Kind: kind}
+	err := &APIError{Status: status, Message: message, Kind: "api"}
 	switch {
 	case status == http.StatusTooManyRequests:
 		err.Kind = "rate_limit"

@@ -37,7 +37,7 @@ func TestDialDiscoversAndCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	if len(client.Names()) != 1 || client.Definitions()[0].Function.Name != "run_query" {
+	if len(client.Names()) != 1 || client.Definitions()[0].Name != "run_query" {
 		t.Fatalf("tools = %#v", client.Names())
 	}
 	text, err := client.Execute(context.Background(), "run_query", json.RawMessage(`{"query":"SELECT 1"}`))

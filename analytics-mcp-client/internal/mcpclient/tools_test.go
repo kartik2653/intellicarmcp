@@ -21,7 +21,7 @@ func TestConvertPreservesObjectSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tool.Type != "function" || tool.Function.Name != "run_query" || tool.Function.Description != "Run SQL" {
+	if tool.Name != "run_query" || tool.Description != "Run SQL" {
 		t.Fatalf("tool = %+v", tool)
 	}
 	if err := Validate(raw, json.RawMessage(`{"query":"SELECT 1"}`)); err != nil {
@@ -44,7 +44,7 @@ func TestConvertWrapsNonObjectSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(tool.Function.Parameters), `"type":"object"`) && !strings.Contains(string(tool.Function.Parameters), `"type": "object"`) {
-		t.Fatalf("parameters = %s", tool.Function.Parameters)
+	if !strings.Contains(string(tool.InputSchema), `"type":"object"`) && !strings.Contains(string(tool.InputSchema), `"type": "object"`) {
+		t.Fatalf("parameters = %s", tool.InputSchema)
 	}
 }
