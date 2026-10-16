@@ -97,7 +97,9 @@ func (s *Service) Registrations(context.Context) ([]gateway.Registration, error)
 }
 
 // Instructions implements gateway.Instructor.
-func (s *Service) Instructions() string { return BriefInstructions() }
+func (s *Service) Instructions() string {
+	return BriefInstructions() + "\n\n" + LimitInstructions(s.limits.MaxResultRows, s.limits.MaxResponseBytes, s.timeout)
+}
 
 func (s *Service) handleSchema(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: CatalogJSON()}}}, nil
@@ -148,9 +150,12 @@ func (s *Service) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*m
 		s.trace(traceID, "rejected", "tool", queryToolName, "database", s.referDatabase, "sql", s.sqlForLog(scoped), "reason", err.Error())
 		return toolError(err.Error()), nil
 	}
-	args["query"] = scoped
+	forward := map[string]any{"query": scoped}
+	if params != nil {
+		forward["params"] = params
+	}
 	s.trace(traceID, "accepted", "tool", queryToolName, "database", s.referDatabase, "sql", s.sqlForLog(scoped))
-	return s.invoke(ctx, queryToolName, traceID, args)
+	return s.invoke(ctx, queryToolName, traceID, forward)
 }
 
 func (s *Service) authorizeQuery(ctx context.Context, req *mcp.CallToolRequest, query string) (string, error) {
@@ -184,7 +189,7 @@ func (s *Service) invoke(ctx context.Context, name, traceID string, args map[str
 	if err != nil {
 		s.trace(traceID, "upstream_error", "tool", name, "database", s.referDatabase, "sql", s.sqlForLog(sql), "duration_ms", elapsed.Milliseconds(), "error", err.Error())
 		if errors.Is(err, context.DeadlineExceeded) {
-			return toolError("query timed out"), nil
+			return toolError("query timed out. The result was not returned and is not a partial report."), nil
 		}
 		if errors.Is(err, context.Canceled) {
 			return toolError("query cancelled"), nil

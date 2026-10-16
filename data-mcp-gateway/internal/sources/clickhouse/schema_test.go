@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCatalogSerializationAndSelection(t *testing.T) {
@@ -14,6 +15,21 @@ func TestCatalogSerializationAndSelection(t *testing.T) {
 	}
 	if strings.Contains(BriefInstructions(), "_local") || strings.Contains(BriefInstructions(), "_mv") {
 		t.Fatal("instructions expose internal table names")
+	}
+	guidance := BriefInstructions()
+	for _, phrase := range []string{"user's intent", "EXPLAIN ESTIMATE", "aggregation", "bucket", "not a partial", "SQL LIMIT"} {
+		if !strings.Contains(guidance, phrase) {
+			t.Fatalf("instructions missing %q", phrase)
+		}
+	}
+	for _, phrase := range []string{"six months", "6 months", "always summarize"} {
+		if strings.Contains(strings.ToLower(guidance), phrase) {
+			t.Fatalf("instructions contain a date rule %q", phrase)
+		}
+	}
+	limits := LimitInstructions(200, 1048576, 30*time.Second)
+	if !strings.Contains(limits, "MAX_RESULT_ROWS=200") || strings.Contains(limits, "month") {
+		t.Fatalf("limits = %s", limits)
 	}
 	var catalog Catalog
 	if err := json.Unmarshal([]byte(raw), &catalog); err != nil {

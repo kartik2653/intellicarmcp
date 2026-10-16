@@ -13,6 +13,8 @@ import (
 
 const systemPrompt = "You answer analytics questions using the provided MCP tools. Base factual answers on tool results. Do not invent rows, metrics, or tool results."
 
+const planningGuidance = `Choose detailed rows, aggregation, a summary with breakdowns, or a SQL LIMIT from the user's intent, the schema catalog, the authorized scope, and any cardinality estimate that a tool actually returned. A long date range is not automatically a summary, and a short date range is not automatically raw rows. Compute totals in ClickHouse. Use a bucket table only when its grain matches the question, and do not mix fact rows and rollup rows in one total. EXPLAIN ESTIMATE may be used before fetching rows. If it fails or returns no cardinality, do not invent a row count. MAX_RESULT_ROWS, MAX_RESPONSE_BYTES, and the query timeout are fixed server limits. A rejection means no result was returned and is not a partial or complete report. If the user asked for every raw record and it cannot fit, say so and offer an aggregate or a narrower filter. Do not silently replace that request with a summary. SQL LIMIT is the only supported bound. Do not claim an export or a next page.`
+
 // Executor runs a tool that was discovered from MCP.
 type Executor interface {
 	Definitions() []llm.Tool
@@ -125,7 +127,7 @@ type toolResult struct {
 }
 
 func (l *Loop) systemText() string {
-	text := systemPrompt
+	text := systemPrompt + "\n" + planningGuidance
 	if l.ReferDatabase != "" {
 		text += " Only reference the ClickHouse database " + l.ReferDatabase + ". Do not use any other database."
 	}

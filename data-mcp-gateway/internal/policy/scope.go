@@ -20,9 +20,17 @@ func ApplyScope(sql string, bindings map[string]TableBinding, columns map[string
 	if err != nil || len(stmts) != 1 {
 		return "", fmt.Errorf("query could not be parsed")
 	}
+	var explain *chparser.ExplainStmt
 	stmt, ok := stmts[0].(*chparser.SelectQuery)
 	if !ok {
-		return sql, nil
+		explain, ok = stmts[0].(*chparser.ExplainStmt)
+		if !ok {
+			return sql, nil
+		}
+		stmt, ok = explain.Statement.(*chparser.SelectQuery)
+		if !ok {
+			return "", fmt.Errorf("only EXPLAIN of a SELECT statement is allowed")
+		}
 	}
 	aliases := map[string]struct{}{}
 	var tables []*chparser.TableExpr
@@ -84,6 +92,10 @@ func ApplyScope(sql string, bindings map[string]TableBinding, columns map[string
 		if table.Alias == nil {
 			table.Alias = &chparser.AliasExpr{Alias: &chparser.Ident{Name: ident.Table.Name}}
 		}
+	}
+	if explain != nil {
+		explain.Statement = stmt
+		return strings.TrimSpace(chparser.Format(explain)), nil
 	}
 	return strings.TrimSpace(chparser.Format(stmt)), nil
 }

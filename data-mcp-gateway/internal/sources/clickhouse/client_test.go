@@ -318,6 +318,64 @@ func TestPublicGatewayForwardsMetadataAndQuery(t *testing.T) {
 	}
 }
 
+func TestEmptyAlertScopeNeverReachesUpstream(t *testing.T) {
+	t.Parallel()
+	called := false
+	upstream := fakeUpstream(t, func(server *mcp.Server) {
+		server.AddTool(toolSchema(queryToolName, "Execute SQL"), func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			called = true
+			return textResult("[]"), nil
+		})
+	})
+	svc := New(config.ClickHouse{Transport: config.TransportHTTP, URL: upstream.URL + "/mcp"}, config.Policy{
+		QueryTimeout: time.Second, MaxResultRows: 20, MaxResponseBytes: 1 << 20,
+	}, false, nil)
+	svc.SetPermissions(staticFetcher{scope: authz.Scope{TripFleetIDs: []string{"f1"}}})
+	if err := svc.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	regs, err := svc.Registrations(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := handlerNamed(t, regs, queryToolName)(context.Background(), callRaw(`{"query":"SELECT count() FROM alertevent"}`))
+	if err != nil || !result.IsError || called {
+		t.Fatalf("denied = %s called=%v err=%v", textOf(result), called, err)
+	}
+}
+
+func TestResultLimitIgnoresModelOverride(t *testing.T) {
+	t.Parallel()
+	var sawOverride bool
+	upstream := fakeUpstream(t, func(server *mcp.Server) {
+		server.AddTool(toolSchema(queryToolName, "Execute SQL"), func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var args map[string]any
+			_ = json.Unmarshal(req.Params.Arguments, &args)
+			if _, ok := args["max_result_rows"]; ok {
+				sawOverride = true
+			}
+			return textResult(`[1,2,3]`), nil
+		})
+	})
+	svc := New(config.ClickHouse{Transport: config.TransportHTTP, URL: upstream.URL + "/mcp"}, config.Policy{
+		QueryTimeout: time.Second, MaxResultRows: 2, MaxResponseBytes: 1 << 20,
+	}, false, nil)
+	permitAll(svc)
+	if err := svc.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	regs, err := svc.Registrations(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := handlerNamed(t, regs, queryToolName)(context.Background(), callRaw(`{"query":"SELECT vehicleid FROM tripreport","max_result_rows":1000000}`))
+	if err != nil || !result.IsError || sawOverride || !strings.Contains(textOf(result), "not a partial report") || !strings.Contains(textOf(result), "MAX_RESULT_ROWS") {
+		t.Fatalf("limited = %s override=%v err=%v", textOf(result), sawOverride, err)
+	}
+}
+
 func TestDeniedQueryNeverReachesUpstream(t *testing.T) {
 	t.Parallel()
 	called := false

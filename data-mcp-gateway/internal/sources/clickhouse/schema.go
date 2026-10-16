@@ -2,7 +2,9 @@ package clickhouse
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/authz"
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/policy"
@@ -419,5 +421,22 @@ vehicleid is the shared identifier. fleetid on charge and trip rows was copied a
 Time: daybucket = starttime_ms/86400000, weekbucket = starttime_ms/604800000, monthbucket = starttime_ms/2592000000. monthbucket is a fixed 30-day epoch interval, not a calendar month. Rollup utctime is noon UTC for the bucket. Use UTC unless asked otherwise. For calendar months, group by the real timestamp on the fact table.
 Use rollups for long-range counts and totals. Use fact tables for individual records and exact timestamp filters.
 Query only the table names listed here. Fact tables may show multiple versions until merges finish, and rollups may not match a deduplicated fact query. Say so when results disagree instead of claiming one side is always correct.
+
+Choose the result shape from the user's intent, this catalog, the authorized fleet or vehicle scope, and any cardinality estimate that a query actually returned. Use detailed rows when the user asks for individual records and the result can fit. Use aggregation for totals, averages, trends, or grouped statistics. Use a summary with breakdowns when a broad request would be unhelpful as raw rows. Use SQL LIMIT when the user asks for raw records that cannot fit in one response. A long date range is not automatically a summary, and a short date range is not automatically raw rows. Do not silently replace an explicit request for every raw record with a summary; say that it cannot fit and offer an aggregate or a narrower filter.
+
+Compute totals, averages, and trends in ClickHouse. Use a daily, weekly, or monthly bucket table only when its grain matches the question. Do not mix fact rows and rollup rows in one total.
+
+EXPLAIN ESTIMATE may be run on the same SELECT before fetching rows. If it fails or returns no cardinality, do not invent a row count.
+
+MAX_RESULT_ROWS, MAX_RESPONSE_BYTES, and the query timeout are fixed server limits. A rejection means no result was returned and is not a partial or complete report. SQL LIMIT is the only supported bound. Do not claim an export or a next page.
 `)
+}
+
+// LimitInstructions states the configured safety boundaries. It is not a date rule.
+func LimitInstructions(maxRows, maxBytes int, timeout time.Duration) string {
+	seconds := int(timeout.Seconds())
+	if timeout > 0 && seconds == 0 {
+		seconds = 1
+	}
+	return fmt.Sprintf("Configured limits: MAX_RESULT_ROWS=%d, MAX_RESPONSE_BYTES=%d, QUERY_TIMEOUT_SECONDS=%d. These limits are fixed. A result that exceeds them is not returned and is not a partial report.", maxRows, maxBytes, seconds)
 }

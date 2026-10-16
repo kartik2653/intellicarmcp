@@ -408,12 +408,12 @@ func EnforceResult(result *mcp.CallToolResult, limits Limits) (*mcp.CallToolResu
 		return nil, fmt.Errorf("upstream tool result could not be encoded")
 	}
 	if limits.MaxResponseBytes > 0 && len(encoded) > limits.MaxResponseBytes {
-		return toolError(fmt.Sprintf("upstream response exceeds MAX_RESPONSE_BYTES (%d)", limits.MaxResponseBytes)), nil
+		return toolError(fmt.Sprintf("result was not returned because it exceeds MAX_RESPONSE_BYTES (%d). This is not a partial report.", limits.MaxResponseBytes)), nil
 	}
 	if limits.MaxResultRows > 0 {
 		rows, known := countResultRows(result)
 		if known && rows > limits.MaxResultRows {
-			return toolError(fmt.Sprintf("upstream response exceeds MAX_RESULT_ROWS (%d)", limits.MaxResultRows)), nil
+			return toolError(fmt.Sprintf("result was not returned because it exceeds MAX_RESULT_ROWS (%d). This is not a partial report.", limits.MaxResultRows)), nil
 		}
 	}
 	return result, nil

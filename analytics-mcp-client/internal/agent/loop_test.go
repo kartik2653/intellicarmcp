@@ -37,6 +37,23 @@ func (f *fakeTools) Execute(_ context.Context, name string, arguments json.RawMe
 	return `[{"fleet":101,"km":10}]`, nil
 }
 
+func TestSystemTextIncludesPlanningGuidance(t *testing.T) {
+	t.Parallel()
+	loop := &Loop{ReferDatabase: "lafdatav1", Instructions: "Use tripreport"}
+	text := loop.systemText()
+	for _, phrase := range []string{"lafdatav1", "EXPLAIN ESTIMATE", "not a partial", "SQL LIMIT", "Use tripreport"} {
+		if !strings.Contains(text, phrase) {
+			t.Fatalf("system text missing %q in %s", phrase, text)
+		}
+	}
+	lower := strings.ToLower(text)
+	for _, phrase := range []string{"six months", "6 months", "always summarize"} {
+		if strings.Contains(lower, phrase) {
+			t.Fatalf("system text contains a date rule %q", phrase)
+		}
+	}
+}
+
 func TestLoopFinalAnswerWithoutTools(t *testing.T) {
 	t.Parallel()
 	loop := testLoop(t, []string{

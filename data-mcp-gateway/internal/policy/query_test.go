@@ -89,7 +89,7 @@ func TestEnforceResultLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !limited.IsError || !strings.Contains(textOf(limited), "MAX_RESULT_ROWS") {
+	if !limited.IsError || !strings.Contains(textOf(limited), "MAX_RESULT_ROWS") || !strings.Contains(textOf(limited), "not a partial report") {
 		t.Fatalf("row limit result = %+v", limited)
 	}
 
