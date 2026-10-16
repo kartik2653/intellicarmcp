@@ -27,6 +27,7 @@ type Config struct {
 	Effort         string
 	MaxTokens      int
 	MCPServerURL   string
+	AccessToken    string
 	MaxToolCalls   int
 	RequestTimeout time.Duration
 	ReferDatabase  string
@@ -85,6 +86,10 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	if timeoutSec <= 0 {
 		return Config{}, fmt.Errorf("REQUEST_TIMEOUT_SECONDS must be positive")
 	}
+	accessToken := strings.TrimSpace(getenv("ANALYTICS_ACCESS_TOKEN"))
+	if accessToken == "" {
+		return Config{}, fmt.Errorf("ANALYTICS_ACCESS_TOKEN is required")
+	}
 	referDatabase := stringOr(getenv("REFER_DATABASE"), defaultDatabase)
 	if !validDatabaseName(referDatabase) {
 		return Config{}, fmt.Errorf("REFER_DATABASE must be a single ClickHouse identifier")
@@ -96,6 +101,7 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		Effort:         effort,
 		MaxTokens:      maxTokens,
 		MCPServerURL:   mcpURL,
+		AccessToken:    accessToken,
 		MaxToolCalls:   maxCalls,
 		RequestTimeout: time.Duration(timeoutSec) * time.Second,
 		ReferDatabase:  referDatabase,

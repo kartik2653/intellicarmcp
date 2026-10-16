@@ -20,11 +20,34 @@ func TestInteractiveTextInput(t *testing.T) {
 	asker := &scriptAsker{}
 	var out strings.Builder
 	app := &App{
-		In:        strings.NewReader("\nWhat is the total distance travelled by each fleet last month?\nexit\n"),
+		In:        strings.NewReader("\nWhat is the total distance travelled by each fleet last month?\n/reload\nexit\n"),
 		Out:       &out,
 		Model:     "claude-sonnet-5-5",
 		ToolNames: []string{"list_databases", "list_tables", "run_query"},
-		Asker:     asker,
+		Handshake: Handshake{
+			Endpoint:      "http://127.0.0.1:8080/mcp",
+			Protocol:      "2025-11-25",
+			ServerName:    "data-mcp-gateway",
+			ServerVersion: "0.1.0",
+			Instructions:  "Use tripreport",
+			Tools: []ToolInfo{{
+				Name:        "run_query",
+				Description: "Execute SQL against the catalog",
+				InputSchema: `{"type":"object"}`,
+			}},
+		},
+		Asker: asker,
+		Reload: func(context.Context) (Handshake, []string, error) {
+			return Handshake{
+				Endpoint: "http://127.0.0.1:8080/mcp",
+				Protocol: "2025-11-25",
+				Tools: []ToolInfo{{
+					Name:        "get_schema_catalog",
+					Description: "Static schema catalog",
+					InputSchema: `{"type":"object"}`,
+				}},
+			}, []string{"get_schema_catalog"}, nil
+		},
 	}
 	if err := app.Run(context.Background()); err != nil {
 		t.Fatal(err)
@@ -35,6 +58,9 @@ func TestInteractiveTextInput(t *testing.T) {
 	text := out.String()
 	if !strings.Contains(text, "Model: claude-sonnet-5-5") || !strings.Contains(text, "Tools discovered: 3") || !strings.Contains(text, "run_query") {
 		t.Fatalf("banner = %s", text)
+	}
+	if !strings.Contains(text, "Execute SQL against the catalog") || !strings.Contains(text, "Static schema catalog") || strings.Contains(text, "user-token") || strings.Contains(text, "Authorization") {
+		t.Fatalf("handshake = %s", text)
 	}
 	if !strings.Contains(text, "Assistant: Fleet 101 travelled 10 km.") {
 		t.Fatalf("output = %s", text)

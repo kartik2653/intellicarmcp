@@ -15,16 +15,24 @@ const (
 	defaultMaxResultRows    = 200
 	defaultMaxResponseBytes = 1 << 20
 	defaultReferDatabase    = "lafdatav1"
+	defaultPermTimeout      = 5
 	TransportStdio          = "stdio"
 	TransportHTTP           = "http"
 )
 
 // Config is the gateway process configuration.
 type Config struct {
-	HTTPAddr   string
-	ClickHouse ClickHouse
-	Policy     Policy
-	LogSQL     bool
+	HTTPAddr    string
+	ClickHouse  ClickHouse
+	Policy      Policy
+	Permissions Permissions
+	LogSQL      bool
+}
+
+// Permissions configures the user-fleet authorization API.
+type Permissions struct {
+	BaseURL string
+	Timeout time.Duration
 }
 
 // ClickHouse configures the upstream MCP connection.
@@ -85,6 +93,23 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	if maxBytes <= 0 {
 		return Config{}, fmt.Errorf("MAX_RESPONSE_BYTES must be positive")
 	}
+	permTimeout, err := intOr(getenv("PERMISSIONS_TIMEOUT_SECONDS"), defaultPermTimeout)
+	if err != nil {
+		return Config{}, fmt.Errorf("PERMISSIONS_TIMEOUT_SECONDS: %w", err)
+	}
+	if permTimeout <= 0 {
+		return Config{}, fmt.Errorf("PERMISSIONS_TIMEOUT_SECONDS must be positive")
+	}
+	permURL := strings.TrimSpace(getenv("PERMISSIONS_API_BASE_URL"))
+	parsedPerm, err := url.Parse(permURL)
+	if err != nil || parsedPerm.Host == "" || (parsedPerm.Scheme != "http" && parsedPerm.Scheme != "https") || parsedPerm.User != nil {
+		return Config{}, fmt.Errorf("PERMISSIONS_API_BASE_URL must be an absolute http or https URL without credentials")
+	}
+	cfg.Permissions = Permissions{
+		BaseURL: strings.TrimRight(permURL, "/"),
+		Timeout: time.Duration(permTimeout) * time.Second,
+	}
+
 	referDatabase := stringOr(getenv("REFER_DATABASE"), defaultReferDatabase)
 	if !validDatabaseName(referDatabase) {
 		return Config{}, fmt.Errorf("REFER_DATABASE must be a single ClickHouse identifier")

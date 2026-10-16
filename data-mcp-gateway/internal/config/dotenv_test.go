@@ -34,7 +34,7 @@ NOTE=hello # trailing
 func TestLoadFileDoesNotExportSecrets(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gateway.env")
-	contents := "CLICKHOUSE_MCP_COMMAND=uv\nCLICKHOUSE_MCP_ENV={\"CLICKHOUSE_PASSWORD\":\"secret\"}\nCLICKHOUSE_MCP_AUTH_TOKEN=token-value\n"
+	contents := "CLICKHOUSE_MCP_COMMAND=uv\nCLICKHOUSE_MCP_ENV={\"CLICKHOUSE_PASSWORD\":\"secret\"}\nCLICKHOUSE_MCP_AUTH_TOKEN=token-value\nPERMISSIONS_API_BASE_URL=https://permissions.example\n"
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +66,7 @@ func TestLoadMissingDefaultFileUsesProcessEnv(t *testing.T) {
 	t.Chdir(dir)
 	t.Setenv("GATEWAY_ENV_FILE", "")
 	t.Setenv("CLICKHOUSE_MCP_COMMAND", "from-process")
+	t.Setenv("PERMISSIONS_API_BASE_URL", "https://permissions.example")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)

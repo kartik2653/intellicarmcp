@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync/atomic"
 	"time"
 
+	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/authz"
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/config"
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/gateway"
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/observability"
@@ -24,9 +26,17 @@ type Service struct {
 	referDatabase string
 	logSQL        bool
 	logger        *slog.Logger
+	perms         authz.Fetcher
 	traceSeq      atomic.Uint64
 	timeout       time.Duration
 	client        *Client
+}
+
+// SetPermissions attaches the user-scope fetcher used before run_query.
+func (s *Service) SetPermissions(fetcher authz.Fetcher) {
+	if s != nil {
+		s.perms = fetcher
+	}
 }
 
 // New returns a ClickHouse source that is not yet connected.
@@ -129,8 +139,37 @@ func (s *Service) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*m
 		s.trace(traceID, "rejected", "tool", queryToolName, "database", s.referDatabase, "sql", s.sqlForLog(query), "reason", err.Error())
 		return toolError(err.Error()), nil
 	}
-	s.trace(traceID, "accepted", "tool", queryToolName, "database", s.referDatabase, "sql", s.sqlForLog(query))
+	scoped, err := s.authorizeQuery(ctx, req, query)
+	if err != nil {
+		s.trace(traceID, "rejected", "tool", queryToolName, "database", s.referDatabase, "sql", s.sqlForLog(query), "reason", err.Error())
+		return toolError(err.Error()), nil
+	}
+	if err := s.policy.Validate(ctx, policy.Query{SQL: scoped, Params: params}); err != nil {
+		s.trace(traceID, "rejected", "tool", queryToolName, "database", s.referDatabase, "sql", s.sqlForLog(scoped), "reason", err.Error())
+		return toolError(err.Error()), nil
+	}
+	args["query"] = scoped
+	s.trace(traceID, "accepted", "tool", queryToolName, "database", s.referDatabase, "sql", s.sqlForLog(scoped))
 	return s.invoke(ctx, queryToolName, traceID, args)
+}
+
+func (s *Service) authorizeQuery(ctx context.Context, req *mcp.CallToolRequest, query string) (string, error) {
+	if s.perms == nil {
+		return "", fmt.Errorf("authorization is not configured")
+	}
+	var header http.Header
+	if req != nil && req.Extra != nil {
+		header = req.Extra.Header
+	}
+	token, err := authz.BearerToken(header)
+	if err != nil {
+		return "", err
+	}
+	scope, err := s.perms.Fetch(ctx, token)
+	if err != nil {
+		return "", err
+	}
+	return policy.ApplyScope(query, bindingsFor(scope), columnsFor())
 }
 
 func (s *Service) invoke(ctx context.Context, name, traceID string, args map[string]any) (*mcp.CallToolResult, error) {

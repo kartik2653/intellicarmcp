@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/Intellicars/intellicarmcp/analytics-mcp-client/internal/llm"
@@ -14,9 +15,27 @@ const maxResultBytes = 32 * 1024
 
 // Client is an MCP session against the analytics gateway.
 type Client struct {
-	session *mcp.ClientSession
-	order   []string
-	tools   map[string]storedTool
+	endpoint string
+	session  *mcp.ClientSession
+	order    []string
+	tools    map[string]storedTool
+}
+
+// ToolInfo is one discovered tool, safe to print. It never includes credentials.
+type ToolInfo struct {
+	Name        string
+	Description string
+	InputSchema json.RawMessage
+}
+
+// Handshake is the initialize result and the tool list returned to this client.
+type Handshake struct {
+	Endpoint      string
+	Protocol      string
+	ServerName    string
+	ServerVersion string
+	Instructions  string
+	Tools         []ToolInfo
 }
 
 type storedTool struct {
@@ -25,13 +44,21 @@ type storedTool struct {
 }
 
 // Dial connects to a Streamable HTTP MCP server and discovers its tools.
-func Dial(ctx context.Context, endpoint string) (*Client, error) {
+// token is sent as Authorization: Bearer on every gateway request.
+func Dial(ctx context.Context, endpoint, token string) (*Client, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, fmt.Errorf("ANALYTICS_ACCESS_TOKEN is required")
+	}
 	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "analytics-mcp-client", Version: "0.1.0"}, nil)
-	session, err := mcpClient.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: endpoint}, nil)
+	session, err := mcpClient.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:   endpoint,
+		HTTPClient: &http.Client{Transport: bearerRoundTripper{token: token, base: http.DefaultTransport}},
+	}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("connect MCP gateway: %w", err)
 	}
-	client := &Client{session: session, tools: map[string]storedTool{}}
+	client := &Client{endpoint: endpoint, session: session, tools: map[string]storedTool{}}
 	if err := client.Reload(ctx); err != nil {
 		_ = session.Close()
 		return nil, err
@@ -92,6 +119,32 @@ func (c *Client) Instructions() string {
 		return ""
 	}
 	return c.session.InitializeResult().Instructions
+}
+
+// Snapshot returns the handshake and tool descriptions for terminal tracing.
+func (c *Client) Snapshot() Handshake {
+	if c == nil {
+		return Handshake{}
+	}
+	out := Handshake{Endpoint: c.endpoint, Instructions: c.Instructions()}
+	if c.session != nil && c.session.InitializeResult() != nil {
+		init := c.session.InitializeResult()
+		out.Protocol = init.ProtocolVersion
+		out.Instructions = init.Instructions
+		if init.ServerInfo != nil {
+			out.ServerName = init.ServerInfo.Name
+			out.ServerVersion = init.ServerInfo.Version
+		}
+	}
+	for _, name := range c.order {
+		tool := c.tools[name]
+		out.Tools = append(out.Tools, ToolInfo{
+			Name:        name,
+			Description: tool.definition.Description,
+			InputSchema: append(json.RawMessage(nil), tool.schema...),
+		})
+	}
+	return out
 }
 
 // Names returns discovered tool names.
@@ -166,4 +219,19 @@ func renderResult(result *mcp.CallToolResult) string {
 		return joined[:maxResultBytes] + fmt.Sprintf("\n[truncated: MCP response exceeded %d bytes]", maxResultBytes)
 	}
 	return joined
+}
+
+type bearerRoundTripper struct {
+	token string
+	base  http.RoundTripper
+}
+
+func (b bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.Header.Set("Authorization", "Bearer "+b.token)
+	base := b.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(clone)
 }

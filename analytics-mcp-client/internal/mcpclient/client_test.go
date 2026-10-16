@@ -32,13 +32,17 @@ func TestDialDiscoversAndCalls(t *testing.T) {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: query}}}, nil
 		})
 	})
-	client, err := Dial(context.Background(), upstream.URL+"/mcp")
+	client, err := Dial(context.Background(), upstream.URL+"/mcp", "user-token")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	if len(client.Names()) != 1 || client.Definitions()[0].Name != "run_query" {
 		t.Fatalf("tools = %#v", client.Names())
+	}
+	snapshot := client.Snapshot()
+	if snapshot.Protocol == "" || snapshot.ServerName == "" || len(snapshot.Tools) != 1 || snapshot.Tools[0].Description != "Execute SQL" || !strings.Contains(string(snapshot.Tools[0].InputSchema), "query") || strings.Contains(snapshot.Endpoint, "user-token") {
+		t.Fatalf("snapshot = %#v", snapshot)
 	}
 	text, err := client.Execute(context.Background(), "run_query", json.RawMessage(`{"query":"SELECT 1"}`))
 	if err != nil || text != "SELECT 1" {
@@ -59,7 +63,7 @@ func TestExecuteKeepsToolErrorAndTruncates(t *testing.T) {
 			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: strings.Repeat("x", maxResultBytes+10)}}}, nil
 		})
 	})
-	client, err := Dial(context.Background(), upstream.URL+"/mcp")
+	client, err := Dial(context.Background(), upstream.URL+"/mcp", "user-token")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +78,7 @@ func TestDialConnectionFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, err := Dial(ctx, "http://127.0.0.1:1/mcp")
+	_, err := Dial(ctx, "http://127.0.0.1:1/mcp", "user-token")
 	if err == nil {
 		t.Fatal("expected connection error")
 	}
@@ -87,7 +91,7 @@ func TestCloseSession(t *testing.T) {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "[]"}}}, nil
 		})
 	})
-	client, err := Dial(context.Background(), upstream.URL+"/mcp")
+	client, err := Dial(context.Background(), upstream.URL+"/mcp", "user-token")
 	if err != nil {
 		t.Fatal(err)
 	}

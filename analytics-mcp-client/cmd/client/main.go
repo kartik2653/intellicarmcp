@@ -30,7 +30,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	gateway, err := mcpclient.Dial(ctx, cfg.MCPServerURL)
+	gateway, err := mcpclient.Dial(ctx, cfg.MCPServerURL, cfg.AccessToken)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "MCP connection error: %s\n", err.Error())
 		os.Exit(1)
@@ -50,12 +50,13 @@ func main() {
 		Out:       os.Stdout,
 		Model:     cfg.Model,
 		ToolNames: gateway.Names(),
+		Handshake: handshakeView(gateway.Snapshot()),
 		Verbose:   *verbose,
-		Reload: func(ctx context.Context) ([]string, error) {
+		Reload: func(ctx context.Context) (cli.Handshake, []string, error) {
 			if err := gateway.Reload(ctx); err != nil {
-				return nil, err
+				return cli.Handshake{}, nil, err
 			}
-			return gateway.Names(), nil
+			return handshakeView(gateway.Snapshot()), gateway.Names(), nil
 		},
 	}
 	loop := &agent.Loop{
@@ -78,4 +79,22 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Client error: %s\n", err.Error())
 		os.Exit(1)
 	}
+}
+
+func handshakeView(snapshot mcpclient.Handshake) cli.Handshake {
+	view := cli.Handshake{
+		Endpoint:      snapshot.Endpoint,
+		Protocol:      snapshot.Protocol,
+		ServerName:    snapshot.ServerName,
+		ServerVersion: snapshot.ServerVersion,
+		Instructions:  snapshot.Instructions,
+	}
+	for _, tool := range snapshot.Tools {
+		view.Tools = append(view.Tools, cli.ToolInfo{
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: string(tool.InputSchema),
+		})
+	}
+	return view
 }

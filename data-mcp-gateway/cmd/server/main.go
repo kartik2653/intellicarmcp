@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/authz"
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/config"
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/gateway"
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/observability"
@@ -32,6 +34,10 @@ func main() {
 	}
 
 	source := clickhouse.New(cfg.ClickHouse, cfg.Policy, cfg.LogSQL, logger)
+	source.SetPermissions(&authz.Client{
+		BaseURL:    cfg.Permissions.BaseURL,
+		HTTPClient: &http.Client{Timeout: cfg.Permissions.Timeout},
+	})
 	server := gateway.New(logger, []gateway.Source{source}, cfg.Policy.QueryTimeout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

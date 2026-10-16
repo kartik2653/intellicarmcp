@@ -23,7 +23,7 @@ func TestRegistryRejectsDuplicatesAndMountsTools(t *testing.T) {
 	if err := registry.Register(Registration{Tool: &mcp.Tool{Name: "missing"}, Handler: handler}); err == nil {
 		t.Fatal("expected missing schema error")
 	}
-	server := newMCPServer("")
+	server := newMCPServer("", nil)
 	registry.Mount(server)
 	if got := registry.Names(); len(got) != 1 || got[0] != "list_databases" {
 		t.Fatalf("names = %#v", got)

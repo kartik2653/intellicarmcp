@@ -3,6 +3,9 @@ package clickhouse
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/authz"
+	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/policy"
 )
 
 const toolSchemaCatalog = "get_schema_catalog"
@@ -312,6 +315,64 @@ func CatalogJSON() string {
 		return `{"error":"schema catalog could not be encoded"}`
 	}
 	return string(encoded)
+}
+
+// TableColumns returns the catalog column names for one queryable table.
+func TableColumns(name string) []string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, domain := range staticCatalog().Domains {
+		for _, table := range domain.Tables {
+			if table.Name != name {
+				continue
+			}
+			out := make([]string, 0, len(table.Columns))
+			for _, column := range table.Columns {
+				out = append(out, column.Name)
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+// TableBinding describes how a catalog table is authorized.
+func TableBinding(name string) (domain, column string, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "alertevent":
+		return "alerts", "vehicleid", true
+	case "geofenceevent":
+		return "geofence", "vehicleid", true
+	case "tripreport", "invalidtripreport", "tripreport_dailybucket", "tripreport_weeklybucket", "tripreport_monthlybucket":
+		return "trips", "fleetid", true
+	case "chargereport", "invalid_chargereport", "chargereport_dailybucket", "chargereport_weeklybucket", "chargereport_monthlybucket":
+		return "charging", "fleetid", true
+	default:
+		return "", "", false
+	}
+}
+
+func bindingsFor(scope authz.Scope) map[string]policy.TableBinding {
+	out := map[string]policy.TableBinding{}
+	for _, name := range QueryTables() {
+		domain, column, ok := TableBinding(name)
+		if !ok {
+			continue
+		}
+		ids := map[string]struct{}{}
+		for _, id := range scope.IDs(domain) {
+			ids[id] = struct{}{}
+		}
+		out[name] = policy.TableBinding{Column: column, IDs: ids}
+	}
+	return out
+}
+
+func columnsFor() map[string][]string {
+	out := map[string][]string{}
+	for _, name := range QueryTables() {
+		out[name] = TableColumns(name)
+	}
+	return out
 }
 
 // QueryTables returns the normal table names the model may query.

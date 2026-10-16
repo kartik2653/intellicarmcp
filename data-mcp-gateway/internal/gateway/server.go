@@ -70,7 +70,7 @@ func (s *Server) Bind(ctx context.Context) error {
 			}
 		}
 	}
-	mcpServer := newMCPServer(strings.Join(instructions, "\n\n"))
+	mcpServer := newMCPServer(strings.Join(instructions, "\n\n"), s.logger)
 	registry.Mount(mcpServer)
 	stream := newStreamHandler(mcpServer)
 	mux := http.NewServeMux()

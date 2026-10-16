@@ -11,6 +11,9 @@ func TestLoadDefaultsAndValidation(t *testing.T) {
 		if key == "CLICKHOUSE_MCP_COMMAND" {
 			return "mcp-clickhouse"
 		}
+		if key == "PERMISSIONS_API_BASE_URL" {
+			return "https://permissions.example"
+		}
 		return ""
 	})
 	if err != nil {
@@ -39,17 +42,19 @@ func TestLoadDefaultsAndValidation(t *testing.T) {
 func TestLoadHTTPAndJSONFields(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
-		"CLICKHOUSE_MCP_TRANSPORT":  "http",
-		"CLICKHOUSE_MCP_URL":        "http://127.0.0.1:8000/mcp",
-		"CLICKHOUSE_MCP_ARGS":       `["run","mcp-clickhouse"]`,
-		"CLICKHOUSE_MCP_ENV":        `{"CLICKHOUSE_HOST":"localhost","CLICKHOUSE_PASSWORD":"secret"}`,
-		"QUERY_TIMEOUT_SECONDS":     "15",
-		"MAX_RESULT_ROWS":           "10",
-		"MAX_RESPONSE_BYTES":        "4096",
-		"AGGREGATION_ONLY":          "true",
-		"REFER_DATABASE":            "lafdatav1",
-		"LOG_SQL":                   "on",
-		"CLICKHOUSE_MCP_AUTH_TOKEN": "token-value",
+		"CLICKHOUSE_MCP_TRANSPORT":    "http",
+		"CLICKHOUSE_MCP_URL":          "http://127.0.0.1:8000/mcp",
+		"CLICKHOUSE_MCP_ARGS":         `["run","mcp-clickhouse"]`,
+		"CLICKHOUSE_MCP_ENV":          `{"CLICKHOUSE_HOST":"localhost","CLICKHOUSE_PASSWORD":"secret"}`,
+		"QUERY_TIMEOUT_SECONDS":       "15",
+		"MAX_RESULT_ROWS":             "10",
+		"MAX_RESPONSE_BYTES":          "4096",
+		"AGGREGATION_ONLY":            "true",
+		"REFER_DATABASE":              "lafdatav1",
+		"LOG_SQL":                     "on",
+		"CLICKHOUSE_MCP_AUTH_TOKEN":   "token-value",
+		"PERMISSIONS_API_BASE_URL":    "https://permissions.example",
+		"PERMISSIONS_TIMEOUT_SECONDS": "3",
 	}
 	cfg, err := LoadFrom(func(key string) string { return env[key] })
 	if err != nil {
@@ -69,6 +74,9 @@ func TestLoadHTTPAndJSONFields(t *testing.T) {
 	}
 	if cfg.ClickHouse.AuthToken != "token-value" {
 		t.Fatal("auth token was not preserved")
+	}
+	if cfg.Permissions.BaseURL != "https://permissions.example" || cfg.Permissions.Timeout != 3*time.Second {
+		t.Fatalf("permissions = %+v", cfg.Permissions)
 	}
 }
 

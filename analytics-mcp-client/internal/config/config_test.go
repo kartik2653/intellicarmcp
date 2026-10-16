@@ -13,6 +13,9 @@ func TestLoadDefaults(t *testing.T) {
 		if key == "ANTHROPIC_API_KEY" {
 			return "test-key"
 		}
+		if key == "ANALYTICS_ACCESS_TOKEN" {
+			return "user-token"
+		}
 		return ""
 	})
 	if err != nil {
@@ -39,7 +42,7 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 		{"ANTHROPIC_API_KEY": "k", "MAX_TOOL_CALLS": "0"},
 		{"ANTHROPIC_API_KEY": "k", "REQUEST_TIMEOUT_SECONDS": "nope"},
 		{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_EFFORT": "turbo"},
-		{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_MODEL": "claude-custom"},
+		{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_MODEL": "claude-custom", "ANALYTICS_ACCESS_TOKEN": "user-token"},
 	}
 	for i, env := range cases {
 		_, err := LoadFrom(func(key string) string { return env[key] })
@@ -58,7 +61,7 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 func TestLoadFileDoesNotExportAPIKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "client.env")
-	if err := os.WriteFile(path, []byte("ANTHROPIC_API_KEY=file-secret\nANTHROPIC_MODEL=claude-sonnet-5-5\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("ANTHROPIC_API_KEY=file-secret\nANTHROPIC_MODEL=claude-sonnet-5-5\nANALYTICS_ACCESS_TOKEN=user-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("CLIENT_ENV_FILE", path)

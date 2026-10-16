@@ -104,6 +104,8 @@ The bearer token is sent as `Authorization: Bearer` and is not written to logs. 
 | `AGGREGATION_ONLY` | `false` | Stricter SELECT rules |
 | `REFER_DATABASE` | `lafdatav1` | The only ClickHouse database the gateway will reference |
 | `LOG_SQL` | `false` | When true, query traces include the original SQL. When false, quoted string literals are redacted |
+| `PERMISSIONS_API_BASE_URL` | required | Base URL for `GET /api/v1/permissions/userfleetvehicles` |
+| `PERMISSIONS_TIMEOUT_SECONDS` | `5` | Timeout for that permissions request |
 
 ## Run
 
@@ -151,6 +153,8 @@ go test -tags integration ./...
 The policy parses one ClickHouse statement with `github.com/AfterShip/clickhouse-sql-parser` and rejects anything it cannot parse. It allows a single `SELECT`, `SHOW`, `DESCRIBE`, or `EXPLAIN` of a `SELECT` (`EXPLAIN ESTIMATE`, `EXPLAIN SYNTAX`, `EXPLAIN PIPELINE`, or `EXPLAIN AST`). Bare `EXPLAIN SELECT` is rejected because the parser requires one of those explain types. A semicolon scan also rejects a second statement outside quotes and comments. This is not a complete ClickHouse grammar, and a parse failure fails closed.
 
 `SELECT *` and `table.*` are rejected. When `AGGREGATION_ONLY=true`, the outer select list must also contain a recognized aggregate call (`count`, `sum`, `avg`, and the other names in `internal/policy/query.go`). Unrecognized aggregate functions are rejected in that mode. The `Query` type carries an optional analytics payload so a future module can check datasets, metrics, dimensions, and time ranges before SQL is built. This phase does not plan natural-language questions.
+
+`run_query` requires exactly one `Authorization: Bearer` token on the MCP HTTP request. The gateway sends that token to `GET {PERMISSIONS_API_BASE_URL}/api/v1/permissions/userfleetvehicles` and builds four scopes: alert vehicles (`fleet.alerts.view`), trip fleets (`fleet.trip_insights.view`), geofence vehicles (`fleet.geofence.view`), and charging fleets (`fleet.charge_insights.view`). Each physical catalog table is rewritten as a derived table that lists catalog columns and adds `vehicleid IN (...)` or `fleetid IN (...)`. A missing token, a permissions failure, an empty scope, or a filter outside that scope rejects the query before ClickHouse. `get_schema_catalog` stays local and does not call the permissions API. The gateway does not log the token.
 
 `REFER_DATABASE` defaults to `lafdatav1`. Queries may use that database explicitly or leave the table unqualified, because the gateway sets the upstream `CLICKHOUSE_DATABASE` to the same name. Any other database is rejected, including `SHOW DATABASES`. Physical tables must be in the static catalog. Names ending in `_local` or `_mv` are rejected, including inside CTEs and subqueries. Table functions such as `remote()` are rejected.
 

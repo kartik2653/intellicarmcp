@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/authz"
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/config"
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/gateway"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -86,7 +87,8 @@ func TestInvalidArgumentsAndUpstreamFailure(t *testing.T) {
 		server.AddTool(toolSchema(queryToolName, "Execute SQL"), func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args map[string]any
 			_ = json.Unmarshal(req.Params.Arguments, &args)
-			if args["query"] == "SELECT 1" {
+			query, _ := args["query"].(string)
+			if strings.Contains(query, "SELECT 1") {
 				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "upstream failed"}}}, nil
 			}
 			return textResult("[]"), nil
@@ -95,6 +97,7 @@ func TestInvalidArgumentsAndUpstreamFailure(t *testing.T) {
 	svc := New(config.ClickHouse{Transport: config.TransportHTTP, URL: upstream.URL + "/mcp"}, config.Policy{
 		QueryTimeout: time.Second, MaxResultRows: 10, MaxResponseBytes: 1 << 20,
 	}, false, nil)
+	permitAll(svc)
 	if err := svc.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +127,8 @@ func TestRowAndByteLimits(t *testing.T) {
 		server.AddTool(toolSchema(queryToolName, "Execute SQL"), func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args map[string]any
 			_ = json.Unmarshal(req.Params.Arguments, &args)
-			if args["query"] == "SELECT count() FROM tripreport" {
+			query, _ := args["query"].(string)
+			if strings.Contains(query, "tripreport") {
 				return textResult(`[1,2,3,4]`), nil
 			}
 			return textResult(`"` + "0123456789abcdef" + `"`), nil
@@ -133,6 +137,7 @@ func TestRowAndByteLimits(t *testing.T) {
 	svc := New(config.ClickHouse{Transport: config.TransportHTTP, URL: upstream.URL + "/mcp"}, config.Policy{
 		QueryTimeout: time.Second, MaxResultRows: 2, MaxResponseBytes: 40,
 	}, false, nil)
+	permitAll(svc)
 	if err := svc.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -225,6 +230,7 @@ func TestSchemaCatalogHidesDiscoveryTools(t *testing.T) {
 	svc := New(config.ClickHouse{Transport: config.TransportHTTP, URL: upstream.URL + "/mcp"}, config.Policy{
 		QueryTimeout: time.Second, MaxResultRows: 20, MaxResponseBytes: 1 << 20, ReferDatabase: "lafdatav1", AllowedDatabases: []string{"lafdatav1"},
 	}, false, nil)
+	permitAll(svc)
 	if err := svc.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +271,9 @@ func TestPublicGatewayForwardsMetadataAndQuery(t *testing.T) {
 	svc := New(config.ClickHouse{Transport: config.TransportHTTP, URL: upstream.URL + "/mcp"}, config.Policy{
 		QueryTimeout: time.Second, MaxResultRows: 20, MaxResponseBytes: 1 << 20,
 	}, false, nil)
-	gw := gateway.New(nil, []gateway.Source{svc}, time.Second)
+	permitAll(svc)
+	var logs bytes.Buffer
+	gw := gateway.New(slog.New(slog.NewJSONHandler(&logs, nil)), []gateway.Source{svc}, time.Second)
 	if err := gw.Bind(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +283,10 @@ func TestPublicGatewayForwardsMetadataAndQuery(t *testing.T) {
 
 	ctx := context.Background()
 	client := mcp.NewClient(&mcp.Implementation{Name: "downstream", Version: "0.0.1"}, nil)
-	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: httpServer.URL + "/mcp"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:   httpServer.URL + "/mcp",
+		HTTPClient: &http.Client{Transport: &bearerRoundTripper{token: "user-token"}},
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +310,44 @@ func TestPublicGatewayForwardsMetadataAndQuery(t *testing.T) {
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: queryToolName, Arguments: map[string]any{"query": "SELECT count() FROM tripreport"}})
 	if err != nil || result.IsError {
-		t.Fatalf("query call = %+v err=%v", result, err)
+		t.Fatalf("query call = %s err=%v", textOf(result), err)
+	}
+	trace := logs.String()
+	if !strings.Contains(trace, `"stage":"initialize"`) || !strings.Contains(trace, `"stage":"tools_listed"`) || !strings.Contains(trace, "get_schema_catalog") || !strings.Contains(trace, "chargereport") || strings.Contains(trace, "user-token") {
+		t.Fatalf("handshake log = %s", trace)
+	}
+}
+
+func TestDeniedQueryNeverReachesUpstream(t *testing.T) {
+	t.Parallel()
+	called := false
+	upstream := fakeUpstream(t, func(server *mcp.Server) {
+		server.AddTool(toolSchema(queryToolName, "Execute SQL"), func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			called = true
+			return textResult("[]"), nil
+		})
+	})
+	svc := New(config.ClickHouse{Transport: config.TransportHTTP, URL: upstream.URL + "/mcp"}, config.Policy{
+		QueryTimeout: time.Second, MaxResultRows: 20, MaxResponseBytes: 1 << 20,
+	}, false, nil)
+	svc.SetPermissions(staticFetcher{scope: authz.Scope{}})
+	if err := svc.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	regs, err := svc.Registrations(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerNamed(t, regs, queryToolName)
+	result, err := handler(context.Background(), callRaw(`{"query":"SELECT count() FROM tripreport"}`))
+	if err != nil || !result.IsError || called {
+		t.Fatalf("denied = %s called=%v err=%v", textOf(result), called, err)
+	}
+	missing := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: json.RawMessage(`{"query":"SELECT count() FROM tripreport"}`)}}
+	result, err = handler(context.Background(), missing)
+	if err != nil || !result.IsError || called {
+		t.Fatalf("missing token = %s called=%v err=%v", textOf(result), called, err)
 	}
 }
 
@@ -313,6 +361,7 @@ func TestQueryTraceLogsApproach(t *testing.T) {
 	svc := New(config.ClickHouse{Transport: config.TransportHTTP, URL: upstream.URL + "/mcp"}, config.Policy{
 		QueryTimeout: time.Second, MaxResultRows: 20, MaxResponseBytes: 1 << 20, ReferDatabase: "lafdatav1", AllowedDatabases: []string{"lafdatav1"},
 	}, false, logger)
+	permitAll(svc)
 	if err := svc.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +372,7 @@ func TestQueryTraceLogsApproach(t *testing.T) {
 	}
 	result, err := handlerNamed(t, regs, queryToolName)(context.Background(), callRaw(`{"query":"SELECT count() FROM tripreport WHERE name = 'secret'"}`))
 	if err != nil || result.IsError {
-		t.Fatalf("query = %+v err=%v", result, err)
+		t.Fatalf("query = %s err=%v", textOf(result), err)
 	}
 	text := logs.String()
 	for _, stage := range []string{"received", "accepted", "upstream", "completed"} {
@@ -331,7 +380,7 @@ func TestQueryTraceLogsApproach(t *testing.T) {
 			t.Fatalf("missing stage %s in %s", stage, text)
 		}
 	}
-	if !strings.Contains(text, "SELECT count() FROM tripreport WHERE name = ?") || strings.Contains(text, "secret") {
+	if !strings.Contains(text, "tripreport") || !strings.Contains(text, "fleetid") || strings.Contains(text, "secret") {
 		t.Fatalf("sql trace = %s", text)
 	}
 	if !strings.Contains(text, `"trace":"q1"`) || !strings.Contains(text, `"database":"lafdatav1"`) {
@@ -398,7 +447,23 @@ func textOf(result *mcp.CallToolResult) string {
 }
 
 func callRaw(payload string) *mcp.CallToolRequest {
-	return &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: json.RawMessage(payload)}}
+	return &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{Arguments: json.RawMessage(payload)},
+		Extra:  &mcp.RequestExtra{Header: http.Header{"Authorization": []string{"Bearer user-token"}}},
+	}
+}
+
+type staticFetcher struct{ scope authz.Scope }
+
+func (s staticFetcher) Fetch(context.Context, string) (authz.Scope, error) { return s.scope, nil }
+
+func permitAll(svc *Service) {
+	svc.SetPermissions(staticFetcher{scope: authz.Scope{
+		AlertVehicleIDs:    []string{"v1"},
+		TripFleetIDs:       []string{"f1"},
+		GeofenceVehicleIDs: []string{"v1"},
+		ChargingFleetIDs:   []string{"f1"},
+	}})
 }
 
 func handlerNamed(t *testing.T, regs []gateway.Registration, name string) mcp.ToolHandler {
