@@ -1,8 +1,6 @@
 # Data MCP Gateway
 
-A Go MCP gateway with one public Streamable HTTP endpoint. In this phase it connects to the official [ClickHouse MCP server](https://github.com/ClickHouse/mcp-clickhouse) as an MCP client. It does not open a ClickHouse connection and does not include a ClickHouse driver.
-
-PostgreSQL and other sources are not implemented. A later module can implement the same source interface and be registered from `cmd/server/main.go`.
+A Go MCP gateway with one public Streamable HTTP endpoint. It connects to the official [ClickHouse MCP server](https://github.com/ClickHouse/mcp-clickhouse) and, when enabled, Microsoft's [PostgreSQL MCP server](https://github.com/microsoft/postgres-mcp) as MCP clients. It does not open database drivers itself.
 
 ## Architecture
 
@@ -13,22 +11,23 @@ AI application
 Go gateway
     |-- MCP server (downstream tools)
     |-- tool registry
-    |-- query policy
+    |-- query policy + fleet authorization
     |-- ClickHouse source module (MCP client)
+    |-- PostgreSQL source module (MCP client, optional)
     v
-Official mcp-clickhouse
-    v
-ClickHouse
+Official mcp-clickhouse          @microsoft/postgres-mcp (stdio/npx)
+    v                                   v
+ClickHouse                         AlloyDB via Auth Proxy
 ```
 
-The gateway exposes two public tools:
+Public tools:
 
-- `get_schema_catalog` returns the static table catalog. It does not query ClickHouse.
-- The upstream query tool, discovered by its real name (currently `run_query`), is wrapped. The gateway validates the SQL, then calls that tool with the same argument object and the schema discovered from the upstream server.
+- `get_schema_catalog` / `run_query` — ClickHouse telemetry catalog and queries.
+- `get_postgres_schema_catalog` / `postgres_query` — PostgreSQL relational catalog and queries (when `POSTGRES_MCP_ENABLED` is on).
 
-`list_databases`, `list_tables`, and `run_chdb_select_query` are not exposed. The model chooses a table from the catalog.
+`list_databases`, `list_tables`, `postgres_mcp_modify`, and other upstream discovery/write tools are not exposed. Cross-database joins are not supported.
 
-`run_query` is required. If discovery does not find it, the process exits during startup.
+`run_query` is required for ClickHouse. If discovery does not find it, the process exits during startup.
 
 ## Layout
 
@@ -39,7 +38,9 @@ data-mcp-gateway/
 ├── internal/gateway/
 ├── internal/policy/
 ├── internal/observability/
-└── internal/sources/clickhouse/
+└── internal/sources/
+    ├── clickhouse/
+    └── postgres/
 ```
 
 ## Prerequisites
@@ -47,6 +48,7 @@ data-mcp-gateway/
 - Go 1.25 or newer
 - [uv](https://docs.astral.sh/uv/) or another way to run `mcp-clickhouse`
 - A ClickHouse HTTP endpoint for the upstream server (port 8123, or 8443 for TLS)
+- For PostgreSQL: Node.js 22+ with `npx`, and AlloyDB Auth Proxy on `127.0.0.1:9471` (project `intellicar-in`, region `asia-south1`, cluster `pgsql-in`, instance `primary`)
 
 The Go module depends on `github.com/modelcontextprotocol/go-sdk/mcp` and `github.com/AfterShip/clickhouse-sql-parser`.
 
@@ -172,6 +174,45 @@ Only `tripreport_*bucket.totaldistance` is recorded as `Decimal(10,3)`. These co
 A row limit counts a JSON array, or a `rows` / `data` / `result` array, in upstream text content. Other shapes are bounded only by `MAX_RESPONSE_BYTES`. Oversized results are rejected whole. The gateway does not trim JSON. Neither limit reduces the rows ClickHouse scans. Read-only database grants and upstream `CLICKHOUSE_ALLOW_WRITE_ACCESS=false` are still required. An MCP client cannot prove that an upstream query is read-only.
 
 Every ClickHouse query is logged as a `clickhouse_query` trace on stderr: `received`, `accepted` or `rejected`, `upstream`, then `completed`, `upstream_error`, or `result_rejected`. Lines for one query share a `trace` id and include the database and SQL. Quoted string literals are replaced with `?` unless `LOG_SQL=true`. Result rows are not logged. Passwords and tokens are omitted.
+
+## PostgreSQL MCP (optional)
+
+Upstream: [`@microsoft/postgres-mcp`](https://github.com/microsoft/postgres-mcp) over **stdio** (`npx -y @microsoft/postgres-mcp run`). The gateway keeps one long-lived MCP session, calls `postgres_mcp_connect`, then `postgres_mcp_query` with the returned `connectionId`. Streamable HTTP for this upstream is not used.
+
+Enable with `POSTGRES_MCP_ENABLED=true` and set `POSTGRES_USER` / `POSTGRES_PASSWORD`. The gateway builds `POSTGRES_MCP_CONNECTION_STRING` for the subprocess and never logs it. Defaults target AlloyDB Auth Proxy (`POSTGRES_HOST=127.0.0.1`, `POSTGRES_PORT=9471`, `POSTGRES_DATABASE=region_india`). For Neon or other TLS hosts set `POSTGRES_SSLMODE=require`.
+
+```bash
+npx -y @microsoft/postgres-mcp run   # what the gateway launches via POSTGRES_MCP_COMMAND/ARGS
+```
+
+Use a dedicated read-only PostgreSQL role: `CONNECT` on the database, `USAGE` on approved schemas, `SELECT` on approved tables only. Do not grant write privileges. The gateway never exposes `postgres_mcp_modify`.
+
+### Schema metadata and joins
+
+At connect (and again from `get_postgres_schema_catalog` if the cache is empty), the gateway loads **approved tables only**:
+
+- `COMMENT ON TABLE` via `obj_description` / `information_schema.tables`
+- Column name, `data_type`, nullability, ordinal via `information_schema.columns`
+
+Results stay in an in-memory cache. There is **no** persisted relationship catalog and no foreign-key assumption. The analytics client instructs the LLM to infer joins on demand from descriptions, column names/types, and business meaning, with explicit confidence levels and aggregation/grain checks.
+
+`get_postgres_schema_catalog` returns the allowlist plus hydrated descriptions/columns when available (`metadata_hydrated`). Missing comments are allowed.
+
+### Authorization and limits
+
+`postgres_query` requires the same Bearer token as ClickHouse. The gateway resolves fleet/vehicle IDs from `userfleetvehicles` and rewrites approved `schema.table` references with `"fleetid" IN (...)` or `"vehicleid" IN (...)` (inner wrap uses `SELECT *`; outer `SELECT *` remains rejected). Only tables with a `fleetid` or `vehicleid` scope mapping are exposed. Tables such as `geofencemodule.geofencerule` without those columns are **not** queryable in this phase.
+
+Unmapped, secret, staging, and userid-only tables are rejected. Cross-database joins with ClickHouse are out of scope.
+
+Query policy strips SQL comments, rejects multi-statement and write/DDL tokens, allowlists tables, then enforces row/byte limits (`POSTGRES_MAX_RESULT_ROWS`, `POSTGRES_MAX_RESPONSE_BYTES`, `POSTGRES_QUERY_TIMEOUT_SECONDS`). Prefer a DB role that cannot write; gateway checks are defense in depth, not a full PostgreSQL AST parser.
+
+Example:
+
+```sql
+SELECT fleetid FROM fleetmodule.fleets
+```
+
+PostgreSQL queries are traced as `postgres_query` on stderr with the same stage names as ClickHouse. Passwords and connection strings are omitted.
 
 ## Adding a source
 

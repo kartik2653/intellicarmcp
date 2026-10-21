@@ -35,6 +35,12 @@ func TestParseScopeUnionsVehiclesAndKeepsDomainsSeparate(t *testing.T) {
 	if len(scope.GeofenceVehicleIDs) != 2 {
 		t.Fatalf("geofence = %#v", scope.GeofenceVehicleIDs)
 	}
+	if len(scope.FleetsForPerms("fleet.trip_insights.view")) != 1 || scope.FleetsForPerms("fleet.trip_insights.view")[0] != "parent" {
+		t.Fatalf("fleets by perm = %#v", scope.FleetsByPerm)
+	}
+	if len(scope.VehiclesForPerms("account.vehicle_share.*")) != 0 {
+		t.Fatalf("prefix with no match should be empty")
+	}
 }
 
 func TestParseScopeFailClosed(t *testing.T) {

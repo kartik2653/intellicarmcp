@@ -41,7 +41,7 @@ func TestSystemTextIncludesPlanningGuidance(t *testing.T) {
 	t.Parallel()
 	loop := &Loop{ReferDatabase: "lafdatav1", Instructions: "Use tripreport"}
 	text := loop.systemText()
-	for _, phrase := range []string{"lafdatav1", "EXPLAIN ESTIMATE", "not a partial", "SQL LIMIT", "Use tripreport"} {
+	for _, phrase := range []string{"lafdatav1", "EXPLAIN ESTIMATE", "not a partial", "SQL LIMIT", "Use tripreport", "postgres_query", "Infer joins", "foreign key"} {
 		if !strings.Contains(text, phrase) {
 			t.Fatalf("system text missing %q in %s", phrase, text)
 		}

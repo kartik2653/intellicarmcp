@@ -25,6 +25,8 @@ type Scope struct {
 	TripFleetIDs       []string
 	GeofenceVehicleIDs []string
 	ChargingFleetIDs   []string
+	FleetsByPerm       map[string][]string
+	VehiclesByPerm     map[string][]string
 }
 
 type fleetPayload struct {
@@ -53,18 +55,12 @@ func ParseScope(body []byte) (Scope, error) {
 	if payload.Data.Fleets == nil {
 		return Scope{}, fmt.Errorf("authorization response is missing fleets")
 	}
-	alerts := map[string]struct{}{}
-	trips := map[string]struct{}{}
-	geofence := map[string]struct{}{}
-	charging := map[string]struct{}{}
+	fleetsByPerm := map[string]map[string]struct{}{}
+	vehiclesByPerm := map[string]map[string]struct{}{}
 	for _, fleet := range payload.Data.Fleets {
 		fleetID, err := validID(fleet.FleetID)
 		if err != nil {
 			return Scope{}, fmt.Errorf("fleetid: %w", err)
-		}
-		perms := map[string]struct{}{}
-		for _, perm := range fleet.PermIDs {
-			perms[strings.TrimSpace(perm)] = struct{}{}
 		}
 		var vehicles []string
 		for _, vehicle := range fleet.VehicleIDs {
@@ -74,29 +70,32 @@ func ParseScope(body []byte) (Scope, error) {
 			}
 			vehicles = append(vehicles, id)
 		}
-		if _, ok := perms[PermAlerts]; ok {
-			for _, id := range vehicles {
-				alerts[id] = struct{}{}
+		for _, perm := range fleet.PermIDs {
+			perm = strings.TrimSpace(perm)
+			if perm == "" {
+				continue
 			}
-		}
-		if _, ok := perms[PermGeofence]; ok {
-			for _, id := range vehicles {
-				geofence[id] = struct{}{}
+			if fleetsByPerm[perm] == nil {
+				fleetsByPerm[perm] = map[string]struct{}{}
 			}
-		}
-		if _, ok := perms[PermTrips]; ok {
-			trips[fleetID] = struct{}{}
-		}
-		if _, ok := perms[PermCharging]; ok {
-			charging[fleetID] = struct{}{}
+			fleetsByPerm[perm][fleetID] = struct{}{}
+			if vehiclesByPerm[perm] == nil {
+				vehiclesByPerm[perm] = map[string]struct{}{}
+			}
+			for _, id := range vehicles {
+				vehiclesByPerm[perm][id] = struct{}{}
+			}
 		}
 	}
-	return Scope{
-		AlertVehicleIDs:    keys(alerts),
-		TripFleetIDs:       keys(trips),
-		GeofenceVehicleIDs: keys(geofence),
-		ChargingFleetIDs:   keys(charging),
-	}, nil
+	scope := Scope{
+		FleetsByPerm:   mapKeys(fleetsByPerm),
+		VehiclesByPerm: mapKeys(vehiclesByPerm),
+	}
+	scope.AlertVehicleIDs = scope.VehiclesForPerms(PermAlerts)
+	scope.GeofenceVehicleIDs = scope.VehiclesForPerms(PermGeofence)
+	scope.TripFleetIDs = scope.FleetsForPerms(PermTrips)
+	scope.ChargingFleetIDs = scope.FleetsForPerms(PermCharging)
+	return scope, nil
 }
 
 func (s Scope) IDs(domain string) []string {
@@ -112,6 +111,60 @@ func (s Scope) IDs(domain string) []string {
 	default:
 		return nil
 	}
+}
+
+// FleetsForPerms unions fleet IDs for any exact or prefix permission match.
+func (s Scope) FleetsForPerms(perms ...string) []string {
+	return unionIDs(s.FleetsByPerm, perms...)
+}
+
+// VehiclesForPerms unions vehicle IDs for any exact or prefix permission match.
+func (s Scope) VehiclesForPerms(perms ...string) []string {
+	return unionIDs(s.VehiclesByPerm, perms...)
+}
+
+func unionIDs(byPerm map[string][]string, perms ...string) []string {
+	if len(byPerm) == 0 {
+		return nil
+	}
+	out := map[string]struct{}{}
+	for key, ids := range byPerm {
+		if !permMatches(key, perms...) {
+			continue
+		}
+		for _, id := range ids {
+			out[id] = struct{}{}
+		}
+	}
+	return keys(out)
+}
+
+func permMatches(have string, wanted ...string) bool {
+	for _, want := range wanted {
+		want = strings.TrimSpace(want)
+		if want == "" {
+			continue
+		}
+		if strings.HasSuffix(want, ".*") {
+			prefix := strings.TrimSuffix(want, ".*")
+			if have == prefix || strings.HasPrefix(have, prefix+".") {
+				return true
+			}
+			continue
+		}
+		if have == want {
+			return true
+		}
+	}
+	return false
+}
+
+func mapKeys(sets map[string]map[string]struct{}) map[string][]string {
+	out := make(map[string][]string, len(sets))
+	for key, set := range sets {
+		out[key] = keys(set)
+	}
+	return out
 }
 
 func validID(value string) (string, error) {

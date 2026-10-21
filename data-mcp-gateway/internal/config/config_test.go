@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,6 +38,48 @@ func TestLoadDefaultsAndValidation(t *testing.T) {
 	}
 	if cfg.ClickHouse.Env["CLICKHOUSE_DATABASE"] != "lafdatav1" {
 		t.Fatalf("upstream database = %#v", cfg.ClickHouse.Env)
+	}
+	if cfg.Postgres.Enabled {
+		t.Fatal("postgres should be disabled when POSTGRES_MCP_COMMAND is unset")
+	}
+}
+
+func TestLoadPostgresDefaults(t *testing.T) {
+	t.Parallel()
+	cfg, err := LoadFrom(func(key string) string {
+		switch key {
+		case "CLICKHOUSE_MCP_COMMAND":
+			return "mcp-clickhouse"
+		case "PERMISSIONS_API_BASE_URL":
+			return "https://permissions.example"
+		case "POSTGRES_MCP_ENABLED":
+			return "true"
+		case "POSTGRES_USER":
+			return "readonly"
+		case "POSTGRES_PASSWORD":
+			return "secret"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Postgres.Enabled || cfg.Postgres.Database != "region_india" || cfg.Postgres.Host != "127.0.0.1" || cfg.Postgres.Port != 9471 {
+		t.Fatalf("postgres = %+v", cfg.Postgres)
+	}
+	if cfg.Postgres.Command != "npx" || len(cfg.Postgres.Args) != 3 {
+		t.Fatalf("command = %s args=%#v", cfg.Postgres.Command, cfg.Postgres.Args)
+	}
+	conn := cfg.Postgres.Env["POSTGRES_MCP_CONNECTION_STRING"]
+	if !strings.Contains(conn, "readonly") || !strings.Contains(conn, "region_india") || !strings.Contains(conn, "9471") {
+		t.Fatalf("connection string missing expected parts")
+	}
+	if cfg.Postgres.Env["POSTGRES_MCP_PROFILE_NAME"] != "default" {
+		t.Fatalf("profile env = %#v", cfg.Postgres.Env["POSTGRES_MCP_PROFILE_NAME"])
+	}
+	if strings.Contains(fmt.Sprintf("%v", cfg.Postgres.Env), "\n") {
+		t.Fatal("unexpected newline in env")
 	}
 }
 
@@ -94,6 +138,7 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 		{"CLICKHOUSE_MCP_COMMAND": "mcp-clickhouse", "MAX_RESPONSE_BYTES": "abc"},
 		{"CLICKHOUSE_MCP_COMMAND": "mcp-clickhouse", "REFER_DATABASE": "other db"},
 		{"CLICKHOUSE_MCP_TRANSPORT": "http", "CLICKHOUSE_MCP_URL": "ftp://127.0.0.1/mcp"},
+		{"CLICKHOUSE_MCP_COMMAND": "mcp-clickhouse", "PERMISSIONS_API_BASE_URL": "https://permissions.example", "POSTGRES_MCP_ENABLED": "true"},
 	}
 	for _, env := range cases {
 		_, err := LoadFrom(func(key string) string { return env[key] })

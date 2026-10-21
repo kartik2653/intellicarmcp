@@ -12,6 +12,7 @@ import (
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/gateway"
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/observability"
 	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/sources/clickhouse"
+	"github.com/Intellicars/intellicarmcp/data-mcp-gateway/internal/sources/postgres"
 )
 
 func main() {
@@ -33,12 +34,25 @@ func main() {
 		logger.Warn("clickhouse_mcp_env_ignored", "reason", "CLICKHOUSE_MCP_ENV is applied only to the stdio subprocess")
 	}
 
-	source := clickhouse.New(cfg.ClickHouse, cfg.Policy, cfg.LogSQL, logger)
-	source.SetPermissions(&authz.Client{
+	perms := &authz.Client{
 		BaseURL:    cfg.Permissions.BaseURL,
 		HTTPClient: &http.Client{Timeout: cfg.Permissions.Timeout},
-	})
-	server := gateway.New(logger, []gateway.Source{source}, cfg.Policy.QueryTimeout)
+	}
+	ch := clickhouse.New(cfg.ClickHouse, cfg.Policy, cfg.LogSQL, logger)
+	ch.SetPermissions(perms)
+	sources := []gateway.Source{ch}
+	if cfg.Postgres.Enabled {
+		logger.Info("postgres_enabled",
+			"host", cfg.Postgres.Host,
+			"port", cfg.Postgres.Port,
+			"database", cfg.Postgres.Database,
+			"user", cfg.Postgres.User,
+		)
+		pg := postgres.New(cfg.Postgres, cfg.LogSQL, logger)
+		pg.SetPermissions(perms)
+		sources = append(sources, pg)
+	}
+	server := gateway.New(logger, sources, cfg.Policy.QueryTimeout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if err := server.Run(ctx, cfg.HTTPAddr); err != nil {

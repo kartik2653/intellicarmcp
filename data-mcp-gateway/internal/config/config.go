@@ -16,6 +16,10 @@ const (
 	defaultMaxResponseBytes = 1 << 20
 	defaultReferDatabase    = "lafdatav1"
 	defaultPermTimeout      = 5
+	defaultPostgresHost     = "127.0.0.1"
+	defaultPostgresPort     = 9471
+	defaultPostgresDatabase = "region_india"
+	defaultPostgresSSLMode  = "disable"
 	TransportStdio          = "stdio"
 	TransportHTTP           = "http"
 )
@@ -24,9 +28,28 @@ const (
 type Config struct {
 	HTTPAddr    string
 	ClickHouse  ClickHouse
+	Postgres    Postgres
 	Policy      Policy
 	Permissions Permissions
 	LogSQL      bool
+}
+
+// Postgres configures the Microsoft PostgreSQL MCP subprocess and AlloyDB target.
+type Postgres struct {
+	Enabled          bool
+	Command          string
+	Args             []string
+	Env              map[string]string
+	Host             string
+	Port             int
+	Database         string
+	User             string
+	Password         string
+	SSLMode          string
+	ProfileName      string
+	QueryTimeout     time.Duration
+	MaxResultRows    int
+	MaxResponseBytes int
 }
 
 // Permissions configures the user-fleet authorization API.
@@ -157,7 +180,125 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	default:
 		return Config{}, fmt.Errorf("CLICKHOUSE_MCP_TRANSPORT must be stdio or http")
 	}
+
+	if err := loadPostgres(&cfg, getenv); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+func loadPostgres(cfg *Config, getenv func(string) string) error {
+	command := strings.TrimSpace(getenv("POSTGRES_MCP_COMMAND"))
+	enabledExplicit := strings.TrimSpace(getenv("POSTGRES_MCP_ENABLED"))
+	enabled := boolOr(enabledExplicit, command != "")
+	if enabledExplicit == "" && command == "" {
+		enabled = false
+	}
+	cfg.Postgres.Enabled = enabled
+	if !enabled {
+		return nil
+	}
+	if command == "" {
+		command = "npx"
+	}
+	args, err := parseArgsNamed(getenv("POSTGRES_MCP_ARGS"), "POSTGRES_MCP_ARGS")
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		args = []string{"-y", "@microsoft/postgres-mcp", "run"}
+	}
+	env, err := parseEnvNamed(getenv("POSTGRES_MCP_ENV"), "POSTGRES_MCP_ENV")
+	if err != nil {
+		return err
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	host := stringOr(getenv("POSTGRES_HOST"), defaultPostgresHost)
+	port, err := intOr(getenv("POSTGRES_PORT"), defaultPostgresPort)
+	if err != nil {
+		return fmt.Errorf("POSTGRES_PORT: %w", err)
+	}
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("POSTGRES_PORT must be between 1 and 65535")
+	}
+	database := stringOr(getenv("POSTGRES_DATABASE"), defaultPostgresDatabase)
+	if !validDatabaseName(database) {
+		return fmt.Errorf("POSTGRES_DATABASE must be a single PostgreSQL identifier")
+	}
+	user := strings.TrimSpace(getenv("POSTGRES_USER"))
+	if user == "" {
+		return fmt.Errorf("POSTGRES_USER is required when PostgreSQL MCP is enabled")
+	}
+	password := getenv("POSTGRES_PASSWORD")
+	if strings.TrimSpace(password) == "" {
+		return fmt.Errorf("POSTGRES_PASSWORD is required when PostgreSQL MCP is enabled")
+	}
+	sslMode := stringOr(getenv("POSTGRES_SSLMODE"), defaultPostgresSSLMode)
+	switch strings.ToLower(sslMode) {
+	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
+	default:
+		return fmt.Errorf("POSTGRES_SSLMODE is invalid")
+	}
+	pgTimeout, err := intOr(getenv("POSTGRES_QUERY_TIMEOUT_SECONDS"), int(cfg.Policy.QueryTimeout/time.Second))
+	if err != nil {
+		return fmt.Errorf("POSTGRES_QUERY_TIMEOUT_SECONDS: %w", err)
+	}
+	if pgTimeout <= 0 {
+		return fmt.Errorf("POSTGRES_QUERY_TIMEOUT_SECONDS must be positive")
+	}
+	pgRows, err := intOr(getenv("POSTGRES_MAX_RESULT_ROWS"), cfg.Policy.MaxResultRows)
+	if err != nil {
+		return fmt.Errorf("POSTGRES_MAX_RESULT_ROWS: %w", err)
+	}
+	if pgRows <= 0 {
+		return fmt.Errorf("POSTGRES_MAX_RESULT_ROWS must be positive")
+	}
+	pgBytes, err := intOr(getenv("POSTGRES_MAX_RESPONSE_BYTES"), cfg.Policy.MaxResponseBytes)
+	if err != nil {
+		return fmt.Errorf("POSTGRES_MAX_RESPONSE_BYTES: %w", err)
+	}
+	if pgBytes <= 0 {
+		return fmt.Errorf("POSTGRES_MAX_RESPONSE_BYTES must be positive")
+	}
+	profile := stringOr(getenv("POSTGRES_MCP_PROFILE_NAME"), "default")
+	conn := buildPostgresConnectionString(host, port, user, password, database, sslMode)
+	// @microsoft/postgres-mcp reads POSTGRES_MCP_* for the env connection profile.
+	env["POSTGRES_MCP_CONNECTION_STRING"] = conn
+	env["POSTGRES_MCP_PROFILE_NAME"] = profile
+	env["POSTGRES_MCP_QUERY_TIMEOUT_MS"] = strconv.Itoa(pgTimeout * 1000)
+	env["POSTGRES_MCP_DISABLE_CWD_ACCESS"] = "1"
+	cfg.Postgres = Postgres{
+		Enabled:          true,
+		Command:          command,
+		Args:             args,
+		Env:              env,
+		Host:             host,
+		Port:             port,
+		Database:         database,
+		User:             user,
+		Password:         password,
+		SSLMode:          sslMode,
+		ProfileName:      profile,
+		QueryTimeout:     time.Duration(pgTimeout) * time.Second,
+		MaxResultRows:    pgRows,
+		MaxResponseBytes: pgBytes,
+	}
+	return nil
+}
+
+func buildPostgresConnectionString(host string, port int, user, password, database, sslMode string) string {
+	u := url.URL{
+		Scheme: "postgresql",
+		User:   url.UserPassword(user, password),
+		Host:   fmt.Sprintf("%s:%d", host, port),
+		Path:   "/" + database,
+	}
+	q := url.Values{}
+	q.Set("sslmode", sslMode)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func stringOr(value, fallback string) string {
@@ -207,25 +348,33 @@ func validDatabaseName(name string) bool {
 }
 
 func parseArgs(value string) ([]string, error) {
+	return parseArgsNamed(value, "CLICKHOUSE_MCP_ARGS")
+}
+
+func parseEnv(value string) (map[string]string, error) {
+	return parseEnvNamed(value, "CLICKHOUSE_MCP_ENV")
+}
+
+func parseArgsNamed(value, name string) ([]string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil, nil
 	}
 	var args []string
 	if err := json.Unmarshal([]byte(value), &args); err != nil {
-		return nil, fmt.Errorf("CLICKHOUSE_MCP_ARGS must be a JSON array of strings")
+		return nil, fmt.Errorf("%s must be a JSON array of strings", name)
 	}
 	return args, nil
 }
 
-func parseEnv(value string) (map[string]string, error) {
+func parseEnvNamed(value, name string) (map[string]string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil, nil
 	}
 	var raw map[string]string
 	if err := json.Unmarshal([]byte(value), &raw); err != nil {
-		return nil, fmt.Errorf("CLICKHOUSE_MCP_ENV must be a JSON object of strings")
+		return nil, fmt.Errorf("%s must be a JSON object of strings", name)
 	}
 	return raw, nil
 }
