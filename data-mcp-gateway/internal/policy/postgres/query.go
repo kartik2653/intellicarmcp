@@ -23,11 +23,22 @@ var bannedKeywords = map[string]struct{}{
 	"deallocate": {}, "discard": {}, "listen": {}, "notify": {}, "unlisten": {}, "security": {},
 }
 
+// DeriveSource resolves target-table IDs from a fleet/vehicle-scoped mapping table.
+type DeriveSource struct {
+	Table       string // schema.table of the mapping relation
+	PickColumn  string // column selected from the mapping table (e.g. ruleid)
+	ScopeColumn string // fleetid or vehicleid on the mapping table
+}
+
 // TableBinding is the row scope for one physical table.
 type TableBinding struct {
-	Column string
-	IDs    map[string]struct{}
-	Perms  []string
+	Column     string
+	FleetIDs   map[string]struct{}
+	VehicleIDs map[string]struct{}
+	Perms      []string
+	// Derive, when set, scopes Column via IN (SELECT pick FROM mapping WHERE scope IN ids)
+	// instead of Column IN (ids). Each DeriveSource uses FleetIDs or VehicleIDs by ScopeColumn.
+	Derive []DeriveSource
 }
 
 // Options configure PostgreSQL query validation.
@@ -111,11 +122,13 @@ func ApplyScope(sql string, bindings map[string]TableBinding, columns map[string
 		if !ok {
 			return "", fmt.Errorf("table %s is not approved", table)
 		}
-		if len(binding.IDs) == 0 {
+		if !bindingAuthorized(binding) {
 			return "", fmt.Errorf("not authorized for table %s", table)
 		}
-		if err := rejectOutsideScope(sql, binding); err != nil {
-			return "", err
+		if len(binding.Derive) == 0 {
+			if err := rejectOutsideScope(sql, binding); err != nil {
+				return "", err
+			}
 		}
 	}
 	rewritten := sql
@@ -124,18 +137,82 @@ func ApplyScope(sql string, bindings map[string]TableBinding, columns map[string
 		if _, ok := columns[table]; !ok {
 			return "", fmt.Errorf("table %s is not approved", table)
 		}
-		ids := make([]string, 0, len(binding.IDs))
-		for id := range binding.IDs {
-			ids = append(ids, "'"+strings.ReplaceAll(id, "'", "''")+"'")
+		pred, err := scopePredicate(binding)
+		if err != nil {
+			return "", err
 		}
 		// Project all columns inside the scope wrap; outer SELECT * remains rejected by Validate.
-		inner := "SELECT * FROM " + qualify(table) +
-			" WHERE " + quoteIdent(binding.Column) + " IN (" + strings.Join(ids, ", ") + ")"
+		inner := "SELECT * FROM " + qualify(table) + " WHERE " + pred
 		alias := strings.Split(table, ".")[1]
 		wrapped := "(" + inner + ") AS " + quoteIdent(alias)
 		rewritten = replaceTableRef(rewritten, table, wrapped)
 	}
 	return strings.TrimSpace(rewritten), nil
+}
+
+func bindingAuthorized(binding TableBinding) bool {
+	if len(binding.Derive) > 0 {
+		return len(binding.FleetIDs) > 0 || len(binding.VehicleIDs) > 0
+	}
+	return len(directScopeIDs(binding)) > 0
+}
+
+func directScopeIDs(binding TableBinding) map[string]struct{} {
+	switch strings.ToLower(binding.Column) {
+	case "fleetid":
+		return binding.FleetIDs
+	case "vehicleid":
+		return binding.VehicleIDs
+	default:
+		return nil
+	}
+}
+
+func scopePredicate(binding TableBinding) (string, error) {
+	if len(binding.Derive) == 0 {
+		ids := quoteIDList(directScopeIDs(binding))
+		if len(ids) == 0 {
+			return "", fmt.Errorf("empty authorization scope")
+		}
+		return quoteIdent(binding.Column) + " IN (" + strings.Join(ids, ", ") + ")", nil
+	}
+	parts := make([]string, 0, len(binding.Derive))
+	for _, src := range binding.Derive {
+		if strings.TrimSpace(src.Table) == "" || strings.TrimSpace(src.PickColumn) == "" {
+			return "", fmt.Errorf("invalid derive source for column %s", binding.Column)
+		}
+		var ids map[string]struct{}
+		switch strings.ToLower(strings.TrimSpace(src.ScopeColumn)) {
+		case "fleetid":
+			ids = binding.FleetIDs
+		case "vehicleid":
+			ids = binding.VehicleIDs
+		default:
+			return "", fmt.Errorf("invalid derive scope column %q", src.ScopeColumn)
+		}
+		quoted := quoteIDList(ids)
+		if len(quoted) == 0 {
+			continue
+		}
+		parts = append(parts,
+			"SELECT "+quoteIdent(src.PickColumn)+" FROM "+qualify(strings.ToLower(src.Table))+
+				" WHERE "+quoteIdent(src.ScopeColumn)+" IN ("+strings.Join(quoted, ", ")+")")
+	}
+	if len(parts) == 0 {
+		return "", fmt.Errorf("empty authorization scope")
+	}
+	return quoteIdent(binding.Column) + " IN (" + strings.Join(parts, " UNION ") + ")", nil
+}
+
+func quoteIDList(ids map[string]struct{}) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for id := range ids {
+		out = append(out, "'"+strings.ReplaceAll(id, "'", "''")+"'")
+	}
+	return out
 }
 
 func stripSQLComments(sql string) (string, error) {
@@ -289,13 +366,17 @@ func replaceTableRef(sql, table, wrapped string) string {
 }
 
 func rejectOutsideScope(sql string, binding TableBinding) error {
+	allowed := directScopeIDs(binding)
+	if len(allowed) == 0 {
+		return fmt.Errorf("%s scope is empty", binding.Column)
+	}
 	col := regexp.QuoteMeta(binding.Column)
 	eq := regexp.MustCompile(`(?i)\b` + col + `\s*=\s*'([^']*)'`)
 	for _, match := range eq.FindAllStringSubmatch(sql, -1) {
 		if len(match) < 2 {
 			continue
 		}
-		if _, ok := binding.IDs[match[1]]; !ok {
+		if _, ok := allowed[match[1]]; !ok {
 			return fmt.Errorf("%s %q is not authorized", binding.Column, match[1])
 		}
 	}
@@ -308,7 +389,7 @@ func rejectOutsideScope(sql string, binding TableBinding) error {
 			if len(lit) < 2 {
 				continue
 			}
-			if _, ok := binding.IDs[lit[1]]; !ok {
+			if _, ok := allowed[lit[1]]; !ok {
 				return fmt.Errorf("%s %q is not authorized", binding.Column, lit[1])
 			}
 		}

@@ -189,18 +189,25 @@ Use a dedicated read-only PostgreSQL role: `CONNECT` on the database, `USAGE` on
 
 ### Schema metadata and joins
 
-At connect (and again from `get_postgres_schema_catalog` if the cache is empty), the gateway loads **approved tables only**:
+The exposable table set is defined in [`internal/sources/postgres/allowlist.json`](internal/sources/postgres/allowlist.json) (schema-derived). Only entries with `scope` of `fleetid`, `vehicleid`, or `derived` and a null `exclude_reason` are loaded. Secrets, permission catalogs, staging tables, and other `unscoped` relations stay out.
+
+At connect (and again from `get_postgres_schema_catalog` if the cache is empty), the gateway loads metadata for **those approved tables only**:
 
 - `COMMENT ON TABLE` via `obj_description` / `information_schema.tables`
 - Column name, `data_type`, nullability, ordinal via `information_schema.columns`
 
 Results stay in an in-memory cache. There is **no** persisted relationship catalog and no foreign-key assumption. The analytics client instructs the LLM to infer joins on demand from descriptions, column names/types, and business meaning, with explicit confidence levels and aggregation/grain checks.
 
-`get_postgres_schema_catalog` returns the allowlist plus hydrated descriptions/columns when available (`metadata_hydrated`). Missing comments are allowed.
+`get_postgres_schema_catalog` returns the allowlist plus hydrated descriptions/columns when available (`metadata_hydrated`). Missing comments are allowed. Status/enabled column names come from hydrated metadata (and optional `use_when` hints), not from a separate status catalog.
 
 ### Authorization and limits
 
-`postgres_query` requires the same Bearer token as ClickHouse. The gateway resolves fleet/vehicle IDs from `userfleetvehicles` and rewrites approved `schema.table` references with `"fleetid" IN (...)` or `"vehicleid" IN (...)` (inner wrap uses `SELECT *`; outer `SELECT *` remains rejected). Only tables with a `fleetid` or `vehicleid` scope mapping are exposed. Tables such as `geofencemodule.geofencerule` without those columns are **not** queryable in this phase.
+`postgres_query` requires the same Bearer token as ClickHouse. The gateway resolves fleet/vehicle IDs from `userfleetvehicles` and rewrites approved `schema.table` references (inner wrap uses `SELECT *`; outer `SELECT *` remains rejected):
+
+- Direct scope: `"fleetid" IN (...)` or `"vehicleid" IN (...)`
+- Derived scope: `"ruleid"|"alertid"|… IN (SELECT … FROM mapping WHERE fleetid IN (…) UNION SELECT … WHERE vehicleid IN (…))` — each mapping arm uses the matching ID set; empty arms are omitted
+
+Examples: `geofencemodule.geofencerule` (`isenabled` / `isdeleted`), `alertmodule.alert`, `geofencemodule.geofence`.
 
 Unmapped, secret, staging, and userid-only tables are rejected. Cross-database joins with ClickHouse are out of scope.
 

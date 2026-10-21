@@ -101,8 +101,8 @@ func TestCatalogExcludesSecrets(t *testing.T) {
 	if !strings.Contains(raw, "Fleet master records") || !strings.Contains(raw, `"metadata_hydrated":true`) {
 		t.Fatalf("expected hydrated description: %s", raw)
 	}
-	if strings.Contains(raw, `"name":"geofencemodule.geofencerule"`) {
-		t.Fatal("geofencerule without fleet/vehicle scope must not be in catalog")
+	if !strings.Contains(raw, `"name":"geofencemodule.geofencerule"`) || !strings.Contains(raw, "geofencerulevehicle") {
+		t.Fatalf("expected derived-scope geofencerule with vehicle map in catalog: %s", raw)
 	}
 	if !strings.Contains(BriefInstructions("region_india"), "ClickHouse") {
 		t.Fatal("instructions should distinguish ClickHouse")
