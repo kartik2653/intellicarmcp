@@ -9,14 +9,15 @@ import (
 )
 
 const (
-	defaultBaseURL    = "https://api.anthropic.com"
-	defaultModel      = "claude-sonnet-5-5"
-	defaultEffort     = "medium"
-	defaultMaxTokens  = 32000
-	defaultMCPURL     = "http://127.0.0.1:8080/mcp"
-	defaultMaxCalls   = 10
-	defaultTimeoutSec = 60
-	defaultDatabase   = "lafdatav1"
+	defaultBaseURL        = "https://api.anthropic.com"
+	defaultModel          = "claude-sonnet-5-5"
+	defaultEffort         = "medium"
+	defaultMaxTokens      = 32000
+	defaultMCPURL         = "http://127.0.0.1:8080/mcp"
+	defaultMaxCalls       = 10
+	defaultTimeoutSec     = 60
+	defaultDatabase       = "lafdatav1"
+	defaultMaxResultBytes = 16 * 1024
 )
 
 // Config is the CLI process configuration.
@@ -29,6 +30,7 @@ type Config struct {
 	MCPServerURL   string
 	AccessToken    string
 	MaxToolCalls   int
+	MaxResultBytes int
 	RequestTimeout time.Duration
 	ReferDatabase  string
 }
@@ -79,6 +81,13 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	if maxCalls <= 0 {
 		return Config{}, fmt.Errorf("MAX_TOOL_CALLS must be positive")
 	}
+	maxResultBytes, err := intOr(getenv("MCP_MAX_RESULT_BYTES"), defaultMaxResultBytes)
+	if err != nil {
+		return Config{}, fmt.Errorf("MCP_MAX_RESULT_BYTES: %w", err)
+	}
+	if maxResultBytes <= 0 {
+		return Config{}, fmt.Errorf("MCP_MAX_RESULT_BYTES must be positive")
+	}
 	timeoutSec, err := intOr(getenv("REQUEST_TIMEOUT_SECONDS"), defaultTimeoutSec)
 	if err != nil {
 		return Config{}, fmt.Errorf("REQUEST_TIMEOUT_SECONDS: %w", err)
@@ -103,6 +112,7 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		MCPServerURL:   mcpURL,
 		AccessToken:    accessToken,
 		MaxToolCalls:   maxCalls,
+		MaxResultBytes: maxResultBytes,
 		RequestTimeout: time.Duration(timeoutSec) * time.Second,
 		ReferDatabase:  referDatabase,
 	}, nil

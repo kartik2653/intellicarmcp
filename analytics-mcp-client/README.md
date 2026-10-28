@@ -24,6 +24,7 @@ Copy `.env.example` to `.env` in this directory. The client loads `.env` directl
 | `MCP_SERVER_URL` | `http://127.0.0.1:8080/mcp` | Gateway Streamable HTTP endpoint |
 | `ANALYTICS_ACCESS_TOKEN` |  | Required. Sent as `Authorization: Bearer` on every gateway request. Never logged. |
 | `MAX_TOOL_CALLS` | `10` | Tool calls allowed for one question |
+| `MCP_MAX_RESULT_BYTES` | `16384` | Truncate each MCP tool result before sending it to Claude |
 | `REQUEST_TIMEOUT_SECONDS` | `60` | Deadline for one question, including tool calls |
 | `REFER_DATABASE` | `lafdatav1` | The only ClickHouse database named in the prompt. The gateway enforces it. |
 

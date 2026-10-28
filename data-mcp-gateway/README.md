@@ -101,7 +101,7 @@ The bearer token is sent as `Authorization: Bearer` and is not written to logs. 
 | `CLICKHOUSE_MCP_URL` |  | Required for http |
 | `CLICKHOUSE_MCP_AUTH_TOKEN` | empty | Bearer token for http |
 | `QUERY_TIMEOUT_SECONDS` | `30` | Upstream tool call timeout |
-| `MAX_RESULT_ROWS` | `200` | Reject larger JSON row arrays |
+| `MAX_RESULT_ROWS` | `1000` | Reject larger JSON row arrays |
 | `MAX_RESPONSE_BYTES` | `1048576` | Reject larger encoded tool results |
 | `AGGREGATION_ONLY` | `false` | Stricter SELECT rules |
 | `REFER_DATABASE` | `lafdatav1` | The only ClickHouse database the gateway will reference |

@@ -27,7 +27,7 @@ func TestLoadDefaultsAndValidation(t *testing.T) {
 	if cfg.ClickHouse.Transport != TransportStdio {
 		t.Fatalf("transport = %s", cfg.ClickHouse.Transport)
 	}
-	if cfg.Policy.QueryTimeout != 30*time.Second || cfg.Policy.MaxResultRows != 200 || cfg.Policy.MaxResponseBytes != 1<<20 {
+	if cfg.Policy.QueryTimeout != 30*time.Second || cfg.Policy.MaxResultRows != 1000 || cfg.Policy.MaxResponseBytes != 1<<20 {
 		t.Fatalf("unexpected defaults: %+v", cfg.Policy)
 	}
 	if cfg.Policy.AggregationOnly || cfg.LogSQL {

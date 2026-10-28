@@ -24,7 +24,7 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.BaseURL != "https://api.anthropic.com" || cfg.Model != "claude-sonnet-5-5" || cfg.Effort != "medium" || cfg.MaxTokens != 32000 || cfg.MCPServerURL != "http://127.0.0.1:8080/mcp" {
 		t.Fatalf("defaults = %+v", cfg)
 	}
-	if cfg.MaxToolCalls != 10 || cfg.RequestTimeout != 60*time.Second {
+	if cfg.MaxToolCalls != 10 || cfg.MaxResultBytes != 16*1024 || cfg.RequestTimeout != 60*time.Second {
 		t.Fatalf("limits = %+v", cfg)
 	}
 	if cfg.ReferDatabase != "lafdatav1" {
@@ -40,6 +40,8 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 		{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://user:secret@api.anthropic.com"},
 		{"ANTHROPIC_API_KEY": "k", "MCP_SERVER_URL": "http://user:pw@127.0.0.1:8080/mcp"},
 		{"ANTHROPIC_API_KEY": "k", "MAX_TOOL_CALLS": "0"},
+		{"ANTHROPIC_API_KEY": "k", "MCP_MAX_RESULT_BYTES": "0"},
+		{"ANTHROPIC_API_KEY": "k", "MCP_MAX_RESULT_BYTES": "nope"},
 		{"ANTHROPIC_API_KEY": "k", "REQUEST_TIMEOUT_SECONDS": "nope"},
 		{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_EFFORT": "turbo"},
 		{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_MODEL": "claude-custom", "ANALYTICS_ACCESS_TOKEN": "user-token"},

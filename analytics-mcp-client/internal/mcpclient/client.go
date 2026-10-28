@@ -11,14 +11,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const maxResultBytes = 32 * 1024
-
 // Client is an MCP session against the analytics gateway.
 type Client struct {
-	endpoint string
-	session  *mcp.ClientSession
-	order    []string
-	tools    map[string]storedTool
+	endpoint       string
+	session        *mcp.ClientSession
+	order          []string
+	tools          map[string]storedTool
+	maxResultBytes int
 }
 
 // ToolInfo is one discovered tool, safe to print. It never includes credentials.
@@ -45,10 +44,14 @@ type storedTool struct {
 
 // Dial connects to a Streamable HTTP MCP server and discovers its tools.
 // token is sent as Authorization: Bearer on every gateway request.
-func Dial(ctx context.Context, endpoint, token string) (*Client, error) {
+// maxResultBytes caps tool result text passed to the model; it must be positive.
+func Dial(ctx context.Context, endpoint, token string, maxResultBytes int) (*Client, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return nil, fmt.Errorf("ANALYTICS_ACCESS_TOKEN is required")
+	}
+	if maxResultBytes <= 0 {
+		return nil, fmt.Errorf("MCP_MAX_RESULT_BYTES must be positive")
 	}
 	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "analytics-mcp-client", Version: "0.1.0"}, nil)
 	session, err := mcpClient.Connect(ctx, &mcp.StreamableClientTransport{
@@ -58,7 +61,7 @@ func Dial(ctx context.Context, endpoint, token string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect MCP gateway: %w", err)
 	}
-	client := &Client{endpoint: endpoint, session: session, tools: map[string]storedTool{}}
+	client := &Client{endpoint: endpoint, session: session, tools: map[string]storedTool{}, maxResultBytes: maxResultBytes}
 	if err := client.Reload(ctx); err != nil {
 		_ = session.Close()
 		return nil, err
@@ -179,7 +182,7 @@ func (c *Client) Execute(ctx context.Context, name string, arguments json.RawMes
 	if result == nil {
 		return "", fmt.Errorf("MCP tool %s returned an empty result", name)
 	}
-	text := renderResult(result)
+	text := c.renderResult(result)
 	if result.IsError {
 		return text, fmt.Errorf("MCP tool %s returned an error", name)
 	}
@@ -196,7 +199,7 @@ func (c *Client) Close() error {
 	return err
 }
 
-func renderResult(result *mcp.CallToolResult) string {
+func (c *Client) renderResult(result *mcp.CallToolResult) string {
 	var parts []string
 	for _, content := range result.Content {
 		text, ok := content.(*mcp.TextContent)
@@ -215,8 +218,9 @@ func renderResult(result *mcp.CallToolResult) string {
 	if joined == "" {
 		joined = "MCP tool returned no text content"
 	}
-	if len(joined) > maxResultBytes {
-		return joined[:maxResultBytes] + fmt.Sprintf("\n[truncated: MCP response exceeded %d bytes]", maxResultBytes)
+	limit := c.maxResultBytes
+	if len(joined) > limit {
+		return joined[:limit] + fmt.Sprintf("\n[truncated: MCP response exceeded %d bytes]", limit)
 	}
 	return joined
 }

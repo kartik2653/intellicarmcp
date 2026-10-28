@@ -31,7 +31,7 @@ func TestLive(t *testing.T) {
 	}
 	_ = conn.Close()
 
-	gateway, err := mcpclient.Dial(context.Background(), cfg.MCPServerURL, cfg.AccessToken)
+	gateway, err := mcpclient.Dial(context.Background(), cfg.MCPServerURL, cfg.AccessToken, cfg.MaxResultBytes)
 	if err != nil {
 		t.Fatal(err)
 	}

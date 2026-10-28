@@ -12,7 +12,7 @@ import (
 const (
 	defaultHTTPAddr         = "127.0.0.1:8080"
 	defaultQueryTimeout     = 30
-	defaultMaxResultRows    = 200
+	defaultMaxResultRows    = 1000
 	defaultMaxResponseBytes = 1 << 20
 	defaultReferDatabase    = "lafdatav1"
 	defaultPermTimeout      = 5

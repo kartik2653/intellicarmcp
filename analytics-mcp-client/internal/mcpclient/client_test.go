@@ -12,6 +12,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const testMaxResultBytes = 16 * 1024
+
 func TestDialDiscoversAndCalls(t *testing.T) {
 	t.Parallel()
 	upstream := fakeMCP(t, func(server *mcp.Server) {
@@ -32,7 +34,7 @@ func TestDialDiscoversAndCalls(t *testing.T) {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: query}}}, nil
 		})
 	})
-	client, err := Dial(context.Background(), upstream.URL+"/mcp", "user-token")
+	client, err := Dial(context.Background(), upstream.URL+"/mcp", "user-token", testMaxResultBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,19 +60,28 @@ func TestDialDiscoversAndCalls(t *testing.T) {
 
 func TestExecuteKeepsToolErrorAndTruncates(t *testing.T) {
 	t.Parallel()
+	limit := 256
 	upstream := fakeMCP(t, func(server *mcp.Server) {
 		server.AddTool(&mcp.Tool{Name: "run_query", InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: strings.Repeat("x", maxResultBytes+10)}}}, nil
+			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: strings.Repeat("x", limit+10)}}}, nil
 		})
 	})
-	client, err := Dial(context.Background(), upstream.URL+"/mcp", "user-token")
+	client, err := Dial(context.Background(), upstream.URL+"/mcp", "user-token", limit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	text, err := client.Execute(context.Background(), "run_query", json.RawMessage(`{}`))
-	if err == nil || !strings.Contains(text, "[truncated:") {
+	if err == nil || !strings.Contains(text, "[truncated:") || !strings.Contains(text, "256 bytes") {
 		t.Fatalf("text suffix=%q err=%v", text[len(text)-40:], err)
+	}
+}
+
+func TestDialRejectsNonPositiveMaxResultBytes(t *testing.T) {
+	t.Parallel()
+	_, err := Dial(context.Background(), "http://127.0.0.1:1/mcp", "user-token", 0)
+	if err == nil || !strings.Contains(err.Error(), "MCP_MAX_RESULT_BYTES") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -78,7 +89,7 @@ func TestDialConnectionFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, err := Dial(ctx, "http://127.0.0.1:1/mcp", "user-token")
+	_, err := Dial(ctx, "http://127.0.0.1:1/mcp", "user-token", testMaxResultBytes)
 	if err == nil {
 		t.Fatal("expected connection error")
 	}
@@ -91,7 +102,7 @@ func TestCloseSession(t *testing.T) {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "[]"}}}, nil
 		})
 	})
-	client, err := Dial(context.Background(), upstream.URL+"/mcp", "user-token")
+	client, err := Dial(context.Background(), upstream.URL+"/mcp", "user-token", testMaxResultBytes)
 	if err != nil {
 		t.Fatal(err)
 	}

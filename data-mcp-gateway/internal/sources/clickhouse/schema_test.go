@@ -27,8 +27,8 @@ func TestCatalogSerializationAndSelection(t *testing.T) {
 			t.Fatalf("instructions contain a date rule %q", phrase)
 		}
 	}
-	limits := LimitInstructions(200, 1048576, 30*time.Second)
-	if !strings.Contains(limits, "MAX_RESULT_ROWS=200") || strings.Contains(limits, "month") {
+	limits := LimitInstructions(1000, 1048576, 30*time.Second)
+	if !strings.Contains(limits, "MAX_RESULT_ROWS=1000") || strings.Contains(limits, "month") {
 		t.Fatalf("limits = %s", limits)
 	}
 	var catalog Catalog

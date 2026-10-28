@@ -30,7 +30,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	gateway, err := mcpclient.Dial(ctx, cfg.MCPServerURL, cfg.AccessToken)
+	gateway, err := mcpclient.Dial(ctx, cfg.MCPServerURL, cfg.AccessToken, cfg.MaxResultBytes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "MCP connection error: %s\n", err.Error())
 		os.Exit(1)
